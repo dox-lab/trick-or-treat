@@ -21,36 +21,54 @@ const AVATARS = ["🦇","🐺","🕷️","🦉","🐈‍⬛","💀","🐸","🦊
 const COLORS  = ["#f97316","#22c55e","#a855f7","#3b82f6","#ef4444","#eab308","#06b6d4","#ec4899","#14b8a6","#f59e0b"];
 
 const BOT_STRATEGIES = [
-  { id:"always_bet",    label:"Siempre apostar",           emoji:"💰", desc:"El bot apuesta en cada ronda sin importar nada" },
-  { id:"always_fold",   label:"Siempre retirarse",          emoji:"🏳️", desc:"El bot se retira en la primera oportunidad" },
-  { id:"ev_threshold",  label:"Umbral de EV (>50%)",       emoji:"🧮", desc:"Apuesta si su EV supera el 50%, si no se retira" },
-  { id:"random",        label:"Aleatorio (50/50)",          emoji:"🎲", desc:"Decide al azar en cada ronda" },
-  { id:"aggressive",    label:"Agresivo (EV>30%)",         emoji:"🔥", desc:"Apuesta con EV>30%, muy difícil de rendir" },
-  { id:"conservative",  label:"Conservador (EV>70%)",      emoji:"🛡️", desc:"Solo apuesta con mano muy fuerte" },
+  { id:"always_bet",   label:"Siempre apostar",      emoji:"💰", desc:"Apuesta en cada ronda sin importar nada" },
+  { id:"always_fold",  label:"Siempre retirarse",     emoji:"🏳️", desc:"Se retira en la primera oportunidad" },
+  { id:"ev_threshold", label:"Umbral EV >50%",        emoji:"🧮", desc:"Apuesta si su EV supera el 50%" },
+  { id:"random",       label:"Aleatorio 50/50",       emoji:"🎲", desc:"Decide al azar en cada ronda" },
+  { id:"aggressive",   label:"Agresivo EV >30%",      emoji:"🔥", desc:"Apuesta con EV>30%" },
+  { id:"conservative", label:"Conservador EV >70%",   emoji:"🛡️", desc:"Solo apuesta con mano muy fuerte" },
 ];
 
 // ─── UTILS ───────────────────────────────────────────────────────────────────
 const roll    = () => Math.floor(Math.random() * 6) + 1;
 const genCode = () => Math.random().toString(36).substring(2,7).toUpperCase();
 const genUID  = () => "u_" + Math.random().toString(36).substring(2,10);
-const calcEV  = (dice) => dice.length ? dice.reduce((a,b)=>a+b,0)/(6*dice.length) : 0;
 const sleep   = (ms) => new Promise(r => setTimeout(r, ms));
 
-// Decisión del bot según estrategia
-function botDecision(strategy, myDice, pubVisibles) {
-  const ev = calcEV([...myDice, ...pubVisibles]);
+/**
+ * MECÁNICA CENTRAL: top3score
+ * Dado los 2 dados privados y los dados públicos visibles,
+ * toma los 3 con mayor valor individual y devuelve su suma.
+ * También verifica si entre esos 3 hay al menos 3 unos (victoria automática).
+ */
+function top3score(privados, publicosVisibles) {
+  const pool = [...privados, ...publicosVisibles];
+  const sorted = [...pool].sort((a,b) => b-a); // descendente
+  const best3  = sorted.slice(0, 3);
+  const score  = best3.reduce((a,b) => a+b, 0);
+  const tresumos = best3.filter(v => v===1).length >= 3;
+  return { score, best3, tresumos };
+}
+
+function calcEV(privados, publicosVisibles) {
+  const { score } = top3score(privados, publicosVisibles);
+  return score / 18; // máximo posible: 3×6=18
+}
+
+function botDecision(strategy, privados, publicosVisibles) {
+  const ev = calcEV(privados, publicosVisibles);
   switch(strategy) {
-    case "always_bet":    return "apostar";
-    case "always_fold":   return "retirarse";
-    case "ev_threshold":  return ev >= 0.5  ? "apostar" : "retirarse";
-    case "aggressive":    return ev >= 0.3  ? "apostar" : "retirarse";
-    case "conservative":  return ev >= 0.7  ? "apostar" : "retirarse";
-    case "random":        return Math.random() > 0.5 ? "apostar" : "retirarse";
-    default:              return "apostar";
+    case "always_bet":   return "apostar";
+    case "always_fold":  return "retirarse";
+    case "ev_threshold": return ev >= 0.5  ? "apostar" : "retirarse";
+    case "aggressive":   return ev >= 0.3  ? "apostar" : "retirarse";
+    case "conservative": return ev >= 0.7  ? "apostar" : "retirarse";
+    case "random":       return Math.random() > 0.5 ? "apostar" : "retirarse";
+    default:             return "apostar";
   }
 }
 
-// Emparejamiento round-robin sin repetir rival
+// Round-robin sin repetir rival
 function buildSchedule(playerIds, totalPartidas) {
   const schedule = {};
   playerIds.forEach(p => { schedule[p] = []; });
@@ -76,7 +94,6 @@ function buildSchedule(playerIds, totalPartidas) {
   return schedule;
 }
 
-// Distribución de fases por jugador por partida
 function buildFaseSchedule(playerIds, totalPartidas, cfg) {
   const fases = {};
   playerIds.forEach(pid => {
@@ -102,27 +119,27 @@ const DOTS = {
   6:[[28,22],[72,22],[28,50],[72,50],[28,78],[72,78]],
 };
 
-function Die({ value, hidden=false, size=60, color="#f97316", shake=false, glow=false }) {
+function Die({ value, hidden=false, size=60, color="#f97316", shake=false, glow=false, selected=false }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 100 100" style={{
-      borderRadius:14, background:hidden?"#1a1a2a":"#0f0f1a",
-      border:`2px solid ${(glow||!hidden)?color:"#2a2a3a"}`,
-      boxShadow:(glow||!hidden)?`0 0 16px ${color}44`:"none",
-      flexShrink:0, transition:"all 0.3s",
-      animation:shake?"shakeDie 0.5s ease":"none",
-    }}>
-      {hidden
-        ? <text x="50" y="65" textAnchor="middle" fontSize="40" fill="#333">?</text>
-        : (DOTS[value]||[]).map(([cx,cy],i)=><circle key={i} cx={cx} cy={cy} r={9} fill={color}/>)
-      }
-    </svg>
-  );
-}
-
-function DiceRow({ dice, hidden=false, size=56, color="#f97316", shake=false }) {
-  return (
-    <div style={{display:"flex",gap:10,flexWrap:"wrap",justifyContent:"center"}}>
-      {(dice||[]).map((v,i)=><Die key={i} value={v} hidden={hidden} size={size} color={color} shake={shake}/>)}
+    <div style={{position:"relative",display:"inline-block"}}>
+      <svg width={size} height={size} viewBox="0 0 100 100" style={{
+        borderRadius:14, background:hidden?"#1a1a2a":"#0f0f1a",
+        border:`2px solid ${selected?"#fff":(glow||!hidden)?color:"#2a2a3a"}`,
+        boxShadow:selected?`0 0 20px #fff8`:(glow||!hidden)?`0 0 16px ${color}44`:"none",
+        flexShrink:0, transition:"all 0.3s",
+        animation:shake?"shakeDie 0.5s ease":"none",
+        display:"block",
+      }}>
+        {hidden
+          ? <text x="50" y="65" textAnchor="middle" fontSize="40" fill="#333">?</text>
+          : (DOTS[value]||[]).map(([cx,cy],i)=><circle key={i} cx={cx} cy={cy} r={9} fill={selected?"#fff":color}/>)
+        }
+      </svg>
+      {selected && (
+        <div style={{position:"absolute",top:-8,right:-8,background:"#22c55e",
+          borderRadius:"50%",width:18,height:18,display:"flex",alignItems:"center",
+          justifyContent:"center",fontSize:10,fontWeight:900,color:"#000"}}>✓</div>
+      )}
     </div>
   );
 }
@@ -135,8 +152,9 @@ const GlobalCSS = () => (
     @keyframes shakeDie { 0%,100%{transform:rotate(0)} 25%{transform:rotate(-12deg)} 75%{transform:rotate(12deg)} }
     @keyframes pulse    { 0%,100%{opacity:1} 50%{opacity:0.35} }
     @keyframes spin     { from{transform:rotate(0)} to{transform:rotate(360deg)} }
-    @keyframes slideUp  { from{opacity:0;transform:translateY(18px)} to{opacity:1;transform:translateY(0)} }
-    @keyframes popIn    { 0%{transform:scale(0.5);opacity:0} 80%{transform:scale(1.1)} 100%{transform:scale(1);opacity:1} }
+    @keyframes slideUp  { from{opacity:0;transform:translateY(14px)} to{opacity:1;transform:translateY(0)} }
+    @keyframes popIn    { 0%{transform:scale(0.5);opacity:0} 80%{transform:scale(1.08)} 100%{transform:scale(1);opacity:1} }
+    @keyframes timerPulse { 0%,100%{transform:scale(1)} 50%{transform:scale(1.1)} }
     * { box-sizing:border-box; }
   `}</style>
 );
@@ -151,6 +169,7 @@ function Btn({ children, onClick, variant="primary", disabled=false, style={} })
     primary:{ bg:"#f97316",color:"#000" }, success:{ bg:"#22c55e",color:"#000" },
     danger: { bg:"#ef4444",color:"#fff" }, ghost:{ bg:"transparent",color:"#f97316",border:"1px solid #f97316" },
     purple: { bg:"#a855f7",color:"#fff" }, dark:{ bg:"#1e1e2e",color:"#aaa",border:"1px solid #2a2a3a" },
+    warning:{ bg:"#eab308",color:"#000" },
   };
   const v = V[variant]||V.primary;
   return (
@@ -158,7 +177,7 @@ function Btn({ children, onClick, variant="primary", disabled=false, style={} })
       background:disabled?"#1e1e2e":v.bg, color:disabled?"#444":v.color,
       border:disabled?"1px solid #2a2a3a":v.border||"none",
       borderRadius:10, padding:"10px 20px", fontWeight:700, fontSize:14,
-      cursor:disabled?"not-allowed":"pointer", transition:"all 0.15s", fontFamily:"inherit", ...style,
+      cursor:disabled?"not-allowed":"pointer", transition:"all 0.15s", fontFamily:"inherit",...style,
     }}>{children}</button>
   );
 }
@@ -188,6 +207,30 @@ function Overlay({ show, children }) {
     <div style={{position:"fixed",inset:0,background:"#0a0a0fee",display:"flex",
       alignItems:"center",justifyContent:"center",zIndex:200,backdropFilter:"blur(8px)",
       animation:"fadeIn 0.2s ease"}}>{children}</div>
+  );
+}
+
+// Reloj circular animado
+function TimerCircle({ seconds, total }) {
+  if (!total || seconds === null) return null;
+  const pct   = seconds / total;
+  const r     = 28;
+  const circ  = 2 * Math.PI * r;
+  const dash  = circ * pct;
+  const color = seconds <= 5 ? "#ef4444" : seconds <= 10 ? "#eab308" : "#22c55e";
+  return (
+    <div style={{display:"flex",flexDirection:"column",alignItems:"center",margin:"6px 0"}}>
+      <svg width={72} height={72} style={{animation:seconds<=5?"timerPulse 0.5s infinite":"none"}}>
+        <circle cx={36} cy={36} r={r} fill="none" stroke="#1e1e2e" strokeWidth={5}/>
+        <circle cx={36} cy={36} r={r} fill="none" stroke={color} strokeWidth={5}
+          strokeDasharray={`${dash} ${circ}`}
+          strokeDashoffset={circ/4}
+          strokeLinecap="round"
+          style={{transition:"stroke-dasharray 1s linear, stroke 0.3s"}}/>
+        <text x={36} y={42} textAnchor="middle" fontSize={18} fontWeight={900} fill={color}
+          fontFamily="monospace">{seconds}</text>
+      </svg>
+    </div>
   );
 }
 
@@ -222,12 +265,12 @@ function HomeScreen({ onGestor, onJoin }) {
 
 // ─── CREAR SALA ───────────────────────────────────────────────────────────────
 function CreateRoomScreen({ onCreated }) {
-  const [pw, setPw]           = useState("");
-  const [total, setTotal]     = useState(5);
-  const [cfg, setCfg]         = useState({control:1,yo_trampo:2,rival_trampa:1,ambos:1});
-  const [botCount, setBotCount] = useState(0);
+  const [pw, setPw]       = useState("");
+  const [total, setTotal] = useState(5);
+  const [cfg, setCfg]     = useState({control:1,yo_trampo:2,rival_trampa:1,ambos:1});
+  const [botCount, setBotCount]       = useState(0);
   const [botStrategy, setBotStrategy] = useState("ev_threshold");
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading]         = useState(false);
   const suma = Object.values(cfg).reduce((a,b)=>a+b,0);
   const upd  = (k,v) => setCfg(c=>({...c,[k]:Math.max(0,v)}));
 
@@ -235,21 +278,16 @@ function CreateRoomScreen({ onCreated }) {
     if (!pw || suma!==total) return;
     setLoading(true);
     const code = genCode();
-    // Crear bots como jugadores predefinidos
     const botPlayers = {};
-    const botIds = [];
     for (let i=0; i<botCount; i++) {
       const bid = `bot_${i}`;
-      botIds.push(bid);
-      botPlayers[bid] = {
-        uid:bid, nickname:`Bot ${i+1}`, avatar:"🤖",
-        color:COLORS[(i+4)%COLORS.length], isBot:true, strategy:botStrategy,
-      };
+      botPlayers[bid] = { uid:bid, nickname:`Bot ${i+1}`, avatar:"🤖",
+        color:COLORS[(i+4)%COLORS.length], isBot:true, strategy:botStrategy };
     }
     await set(ref(db,`rooms/${code}`), {
       code, password:pw,
-      config:{ totalPartidas:total, faseConfig:cfg, showEV:false, timerSecs:0, open:false,
-               botCount, botStrategy },
+      config:{ totalPartidas:total, faseConfig:cfg, showEV:false, timerSecs:0,
+               open:false, botCount, botStrategy },
       status:{ phase:"lobby", partidaActual:0 },
       players:botPlayers, pairs:{}, faseSchedule:{}, balance:{}, logs:{},
       createdAt:Date.now(),
@@ -262,29 +300,28 @@ function CreateRoomScreen({ onCreated }) {
     <div style={{maxWidth:480,margin:"0 auto",padding:"32px 20px"}}>
       <GlobalCSS/>
       <h2 style={{color:"#a855f7",marginBottom:20}}>🔬 Nueva Sala Experimental</h2>
+
       <Card accent="#a855f7" style={{marginBottom:12}}>
         <label style={{color:"#777",fontSize:13,display:"block",marginBottom:6}}>Contraseña del gestor</label>
         <input type="password" value={pw} onChange={e=>setPw(e.target.value)} placeholder="Solo el gestor la sabe"
           style={{width:"100%",background:"#0a0a0f",border:"1px solid #2a2a3a",borderRadius:10,
             padding:"10px 14px",color:"#fff",fontFamily:"inherit",fontSize:15,
             marginBottom:20,boxSizing:"border-box",outline:"none"}}/>
-
         <label style={{color:"#777",fontSize:13,display:"block",marginBottom:6}}>
-          Total de partidas por jugador: <span style={{color:"#f97316"}}>{total}</span>
+          Total de partidas: <span style={{color:"#f97316"}}>{total}</span>
         </label>
         <input type="range" min={2} max={10} value={total}
           onChange={e=>{ const v=+e.target.value; setTotal(v);
             const q=Math.floor(v/4)||1; setCfg({control:q,yo_trampo:q,rival_trampa:q,ambos:v-3*q}); }}
           style={{width:"100%",marginBottom:20,accentColor:"#f97316"}}/>
-
         <div style={{fontSize:13,color:"#777",marginBottom:10}}>
-          Fases experimentales <span style={{color:suma===total?"#22c55e":"#ef4444",fontWeight:700}}>({suma}/{total})</span>
+          Fases <span style={{color:suma===total?"#22c55e":"#ef4444",fontWeight:700}}>({suma}/{total})</span>
         </div>
         {[
-          {k:"control",      label:"🎯 Control",            color:"#aaa"},
-          {k:"yo_trampo",    label:"🃏 Yo veo dado rival",   color:"#eab308"},
-          {k:"rival_trampa", label:"👁️ Rival ve mi dado",   color:"#ef4444"},
-          {k:"ambos",        label:"⚔️ Ambos con trampa",    color:"#a855f7"},
+          {k:"control",      label:"🎯 Control",          color:"#aaa"},
+          {k:"yo_trampo",    label:"🃏 Yo veo dado rival", color:"#eab308"},
+          {k:"rival_trampa", label:"👁️ Rival ve mi dado",  color:"#ef4444"},
+          {k:"ambos",        label:"⚔️ Ambos con trampa",  color:"#a855f7"},
         ].map(({k,label,color})=>(
           <div key={k} style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
             <span style={{flex:1,fontSize:13,color}}>{label}</span>
@@ -298,41 +335,45 @@ function CreateRoomScreen({ onCreated }) {
         {suma!==total&&<p style={{color:"#ef4444",fontSize:12,marginTop:4,textAlign:"center"}}>La suma debe ser {total}</p>}
       </Card>
 
-      {/* BOTS */}
-      <Card accent="#22c55e" style={{marginBottom:12}}>
-        <div style={{fontSize:13,color:"#22c55e",fontWeight:700,marginBottom:12}}>🤖 Configuración de Bots</div>
-        <label style={{color:"#777",fontSize:13,display:"block",marginBottom:6}}>
-          Número de bots: <span style={{color:"#22c55e"}}>{botCount}</span>
-        </label>
-        <input type="range" min={0} max={6} value={botCount} onChange={e=>setBotCount(+e.target.value)}
-          style={{width:"100%",marginBottom:16,accentColor:"#22c55e"}}/>
-        {botCount>0 && (
-          <>
-            <label style={{color:"#777",fontSize:13,display:"block",marginBottom:8}}>Estrategia de todos los bots:</label>
-            <div style={{display:"flex",flexDirection:"column",gap:6}}>
-              {BOT_STRATEGIES.map(s=>(
-                <button key={s.id} onClick={()=>setBotStrategy(s.id)} style={{
-                  background:botStrategy===s.id?"#22c55e22":"#1e1e2e",
-                  border:`1px solid ${botStrategy===s.id?"#22c55e":"#2a2a3a"}`,
-                  borderRadius:10,padding:"9px 14px",cursor:"pointer",textAlign:"left",
-                  display:"flex",alignItems:"center",gap:10,
-                }}>
-                  <span style={{fontSize:18}}>{s.emoji}</span>
-                  <div>
-                    <div style={{color:botStrategy===s.id?"#22c55e":"#aaa",fontWeight:700,fontSize:13}}>{s.label}</div>
-                    <div style={{color:"#555",fontSize:11}}>{s.desc}</div>
-                  </div>
-                </button>
-              ))}
-            </div>
-          </>
-        )}
-      </Card>
+      <BotConfig botCount={botCount} setBotCount={setBotCount}
+        botStrategy={botStrategy} setBotStrategy={setBotStrategy}/>
 
-      <Btn onClick={create} disabled={!pw||loading||suma!==total} variant="purple" style={{width:"100%"}}>
+      <Btn onClick={create} disabled={!pw||loading||suma!==total} variant="purple" style={{width:"100%",marginTop:12}}>
         {loading?"Creando...":"Crear sala 🎃"}
       </Btn>
     </div>
+  );
+}
+
+// Componente reutilizable para configurar bots (usado en crear sala Y en gestor)
+function BotConfig({ botCount, setBotCount, botStrategy, setBotStrategy }) {
+  return (
+    <Card accent="#22c55e" style={{marginBottom:12}}>
+      <div style={{fontSize:13,color:"#22c55e",fontWeight:700,marginBottom:12}}>🤖 Bots</div>
+      <label style={{color:"#777",fontSize:13,display:"block",marginBottom:6}}>
+        Número de bots: <span style={{color:"#22c55e"}}>{botCount}</span>
+      </label>
+      <input type="range" min={0} max={6} value={botCount} onChange={e=>setBotCount(+e.target.value)}
+        style={{width:"100%",marginBottom:12,accentColor:"#22c55e"}}/>
+      {botCount>0 && (
+        <div style={{display:"flex",flexDirection:"column",gap:6}}>
+          {BOT_STRATEGIES.map(s=>(
+            <button key={s.id} onClick={()=>setBotStrategy(s.id)} style={{
+              background:botStrategy===s.id?"#22c55e22":"#1e1e2e",
+              border:`1px solid ${botStrategy===s.id?"#22c55e":"#2a2a3a"}`,
+              borderRadius:10,padding:"8px 12px",cursor:"pointer",textAlign:"left",
+              display:"flex",alignItems:"center",gap:10,
+            }}>
+              <span style={{fontSize:16}}>{s.emoji}</span>
+              <div>
+                <div style={{color:botStrategy===s.id?"#22c55e":"#aaa",fontWeight:700,fontSize:12}}>{s.label}</div>
+                <div style={{color:"#555",fontSize:11}}>{s.desc}</div>
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+    </Card>
   );
 }
 
@@ -381,7 +422,7 @@ function ProfileScreen({ roomCode, onJoined }) {
             <button key={a} onClick={()=>setAvatar(a)} style={{fontSize:26,
               background:avatar===a?"#1e1e2e":"transparent",
               border:`2px solid ${avatar===a?color:"#2a2a3a"}`,
-              borderRadius:10,padding:5,cursor:"pointer",transition:"all 0.15s"}}>{a}</button>
+              borderRadius:10,padding:5,cursor:"pointer"}}>{a}</button>
           ))}
         </div>
         <label style={{color:"#777",fontSize:13,display:"block",marginBottom:8}}>Color</label>
@@ -448,62 +489,60 @@ function GestorProfileScreen({ roomCode, onJoined }) {
   );
 }
 
-// ─── MOTOR DEL JUEGO (funciones puras que usa GestorScreen) ──────────────────
-async function finalizarPartidaDB(roomCode, room, n, pairKey, pd, ganador, motivo) {
-  const [p1,p2] = pd.jugadores||[];
-  const pot = pd.pot||2;
-  let b1=room.balance?.[p1]??10, b2=room.balance?.[p2]??10;
-  let res;
-  if (ganador==="empate") {
-    b1+=Math.floor(pot/2); b2+=Math.floor(pot/2); res="Empate";
-  } else {
-    if (ganador===p1) b1+=pot; else b2+=pot;
-    const nick = room.players?.[ganador]?.nickname||ganador;
-    res = `Ganó ${nick} (${motivo})`;
-  }
-  await update(ref(db,`rooms/${roomCode}`), {
-    [`balance/${p1}`]:b1, [`balance/${p2}`]:b2,
-    [`partidas/${n}/${pairKey}/resultado`]:res,
-    [`partidas/${n}/${pairKey}/ronda`]:4,
-  });
-  const logRef = push(ref(db,`rooms/${roomCode}/logs`));
-  await set(logRef,{
-    partida:n, pairKey, jugador:ganador, rival:"",
-    nickname_jugador:room.players?.[ganador]?.nickname||"",
-    nickname_rival:"",
-    accion:"resultado", ronda:4, ev:0, tiempo_ms:0,
-    fase:pd.fases?.[ganador]||"control",
-    suma_propia:0, suma_publica:0, resultado:res, ts:Date.now(),
-  });
-  return res;
-}
-
+// ─── MOTOR DEL JUEGO ─────────────────────────────────────────────────────────
+/**
+ * Evalúa el resultado final de un par.
+ * Reglas:
+ *  1. Ambos se retiran → casa gana (ganador="casa", motivo="Ambos retirados")
+ *  2. Uno se retira → el otro gana
+ *  3. Empate en top3 → casa gana (ganador="casa", motivo="Empate")
+ *  4. Mayor top3 gana
+ *  5. 3-unos en top3 → victoria automática (solo si el rival no también tiene)
+ */
 async function resolveRondaDB(roomCode, room, n, pairKey, pd, ronda, pidA, decA, pidB, decB) {
-  if (decA==="retirarse"||decB==="retirarse") {
-    const ganador = decA==="retirarse"?pidB:pidA;
-    await finalizarPartidaDB(roomCode, room, n, pairKey, pd, ganador, "Retirada");
+  const ambosFold = decA==="retirarse" && decB==="retirarse";
+  const aFold     = decA==="retirarse";
+  const bFold     = decB==="retirarse";
+
+  if (ambosFold) {
+    await finalizarPartidaDB(roomCode, room, n, pairKey, pd, "casa", "Ambos retirados");
     return;
   }
-  const newPot = (pd.pot||2)+2;
-  const balA = room.balance?.[pidA]??10, balB = room.balance?.[pidB]??10;
-  const upds = { [`balance/${pidA}`]:balA-1, [`balance/${pidB}`]:balB-1 };
+  if (aFold) { await finalizarPartidaDB(roomCode, room, n, pairKey, pd, pidB, "Retirada"); return; }
+  if (bFold) { await finalizarPartidaDB(roomCode, room, n, pairKey, pd, pidA, "Retirada"); return; }
 
-  if (ronda>=3) {
-    const dA=pd.dados?.[pidA]||[], dB=pd.dados?.[pidB]||[], pub=pd.publicos||[];
-    const sA=dA.reduce((a,b)=>a+b,0)+pub.reduce((a,b)=>a+b,0);
-    const sB=dB.reduce((a,b)=>a+b,0)+pub.reduce((a,b)=>a+b,0);
-    const t3A=[...dA,...pub].filter(v=>v===1).length>=3;
-    const t3B=[...dB,...pub].filter(v=>v===1).length>=3;
+  // Ambos apostaron
+  const newPot = (pd.pot||2) + 2;
+  const balA   = room.balance?.[pidA]??10;
+  const balB   = room.balance?.[pidB]??10;
+  const upds   = { [`balance/${pidA}`]:balA-1, [`balance/${pidB}`]:balB-1 };
+
+  if (ronda >= 3) {
+    // Evaluación final con top3
+    const pub = pd.publicos||[];
+    const dA  = pd.dados?.[pidA]||[];
+    const dB  = pd.dados?.[pidB]||[];
+    const resA = top3score(dA, pub);
+    const resB = top3score(dB, pub);
+
     let ganador;
-    if (t3A&&!t3B) ganador=pidA;
-    else if (t3B&&!t3A) ganador=pidB;
-    else if (sA>sB) ganador=pidA;
-    else if (sB>sA) ganador=pidB;
-    else ganador="empate";
-    upds[`partidas/${n}/${pairKey}/pot`]   = newPot;
-    upds[`partidas/${n}/${pairKey}/ronda`] = 4;
+    if (resA.tresumos && !resB.tresumos) ganador = pidA;
+    else if (resB.tresumos && !resA.tresumos) ganador = pidB;
+    else if (resA.score > resB.score)  ganador = pidA;
+    else if (resB.score > resA.score)  ganador = pidB;
+    else ganador = "casa"; // empate → casa
+
+    upds[`partidas/${n}/${pairKey}/pot`]          = newPot;
+    upds[`partidas/${n}/${pairKey}/ronda`]         = 4;
+    upds[`partidas/${n}/${pairKey}/scoreA`]        = resA.score;
+    upds[`partidas/${n}/${pairKey}/scoreB`]        = resB.score;
+    upds[`partidas/${n}/${pairKey}/best3A`]        = resA.best3;
+    upds[`partidas/${n}/${pairKey}/best3B`]        = resB.best3;
     await update(ref(db,`rooms/${roomCode}`), upds);
-    await finalizarPartidaDB(roomCode, room, n, pairKey, {...pd,pot:newPot}, ganador, "Suma final");
+    const motivo = resA.tresumos||resB.tresumos ? "Tres unos" :
+                   ganador==="casa"              ? "Empate"    : "Mayor suma";
+    await finalizarPartidaDB(roomCode, {...room, balance:{...room.balance,...{[pidA]:balA-1,[pidB]:balB-1}}},
+      n, pairKey, {...pd, pot:newPot}, ganador, motivo);
   } else {
     upds[`partidas/${n}/${pairKey}/pot`]        = newPot;
     upds[`partidas/${n}/${pairKey}/ronda`]      = ronda+1;
@@ -513,32 +552,67 @@ async function resolveRondaDB(roomCode, room, n, pairKey, pd, ronda, pidA, decA,
   }
 }
 
+async function finalizarPartidaDB(roomCode, room, n, pairKey, pd, ganador, motivo) {
+  const [p1,p2] = pd.jugadores||[];
+  const pot      = pd.pot||2;
+  let b1=room.balance?.[p1]??10, b2=room.balance?.[p2]??10;
+  let res;
+
+  if (ganador==="casa") {
+    // Casa se lleva todo: ningún jugador gana fichas extra, el pot desaparece
+    res = motivo==="Empate" ? "🏠 Empate — La casa gana el pozo" :
+          motivo==="Ambos retirados" ? "🏠 Ambos se retiraron — La casa gana" :
+          `🏠 Casa gana (${motivo})`;
+  } else {
+    if (ganador===p1) b1+=pot; else b2+=pot;
+    const nick = room.players?.[ganador]?.nickname||ganador;
+    res = `Ganó ${nick} (${motivo})`;
+  }
+
+  await update(ref(db,`rooms/${roomCode}`), {
+    [`balance/${p1}`]:b1, [`balance/${p2}`]:b2,
+    [`partidas/${n}/${pairKey}/resultado`]:res,
+    [`partidas/${n}/${pairKey}/ganador`]:ganador,
+    [`partidas/${n}/${pairKey}/ronda`]:4,
+  });
+
+  const logRef = push(ref(db,`rooms/${roomCode}/logs`));
+  await set(logRef,{
+    partida:n, pairKey, jugador:ganador, rival:"",
+    nickname_jugador:ganador==="casa"?"casa":room.players?.[ganador]?.nickname||"",
+    nickname_rival:"",
+    accion:"resultado", ronda:4, ev:0, tiempo_ms:0,
+    fase:pd.fases?.[ganador]||"control",
+    scoreA:pd.scoreA||0, scoreB:pd.scoreB||0,
+    resultado:res, ts:Date.now(),
+  });
+}
+
 // ─── GESTOR SCREEN ────────────────────────────────────────────────────────────
 function GestorScreen({ roomCode }) {
-  const [room,     setRoom]    = useState(null);
-  const [tab,      setTab]     = useState("control");
-  const [cfgLocal, setCfgLocal]= useState(null);
-  const roomRef_ = useRef(null);
+  const [room,       setRoom]      = useState(null);
+  const [tab,        setTab]       = useState("control");
+  const [cfgLocal,   setCfgLocal]  = useState(null);
+  const [botCountL,  setBotCountL] = useState(0);
+  const [botStratL,  setBotStratL] = useState("ev_threshold");
 
   useEffect(()=>{
     const r = ref(db,`rooms/${roomCode}`);
-    roomRef_.current = r;
-    onValue(r, snap=>{ if(snap.exists()){ const d=snap.val(); setRoom(d); if(!cfgLocal) setCfgLocal(d.config); }});
+    onValue(r, snap=>{ if(snap.exists()){ const d=snap.val(); setRoom(d);
+      if(!cfgLocal){ setCfgLocal(d.config); setBotCountL(d.config?.botCount||0); setBotStratL(d.config?.botStrategy||"ev_threshold"); }
+    }});
     return ()=>off(r);
   },[roomCode]);
 
-  // Auto-avance: cuando todos los pares de la partida actual tienen resultado
+  // Auto-avance cuando todos los pares terminan
   useEffect(()=>{
     if (!room) return;
     const { status, partidas, config } = room;
     if (status?.phase!=="playing") return;
     const n = status?.partidaActual||0;
-    const pData = partidas?.[n]||{};
-    const pairs = Object.values(pData);
-    if (!pairs.length) return;
-    const allDone = pairs.every(p=>p.resultado);
-    if (!allDone) return;
-    // Esperar 2s antes de avanzar (para que los jugadores vean el resultado)
+    const pairs = Object.values(partidas?.[n]||{});
+    if (!pairs.length||!pairs.every(p=>p.resultado)) return;
+
     const timer = setTimeout(async ()=>{
       const snap = await get(ref(db,`rooms/${roomCode}`));
       const r = snap.val();
@@ -549,12 +623,17 @@ function GestorScreen({ roomCode }) {
         const players = Object.keys(r.players||{}).filter(k=>k!=="gestor");
         await launchPartida(next, players, r.pairs, r.faseSchedule, r.config.totalPartidas, r);
       }
-    }, 2500);
+    }, 3000);
     return ()=>clearTimeout(timer);
   },[room?.partidas, room?.status?.partidaActual]);
 
   const openRoom  = ()=>update(ref(db,`rooms/${roomCode}/config`),{open:true});
   const closeRoom = ()=>update(ref(db,`rooms/${roomCode}/config`),{open:false});
+
+  // Parar todo → volver al lobby
+  const stopAll = async () => {
+    await update(ref(db,`rooms/${roomCode}/status`),{phase:"lobby",partidaActual:0});
+  };
 
   const launchPartida = async (numPartida, players, schedule, faseSchedule, totalPartidas, r) => {
     const idx = numPartida-1;
@@ -574,112 +653,113 @@ function GestorScreen({ roomCode }) {
           [pid]:(faseSchedule[pid]||[])[idx]||"control",
           [rival]:(faseSchedule[rival]||[])[idx]||"control",
         },
-        ronda:1, pot:2, decisiones:{}, resultado:null, startedAt:Date.now(),
+        ronda:1, pot:2, decisiones:{}, resultado:null,
+        scoreA:null, scoreB:null, best3A:null, best3B:null,
+        startedAt:Date.now(),
       };
     });
     await update(ref(db,`rooms/${roomCode}/partidas/${numPartida}`), partidaData);
     await update(ref(db,`rooms/${roomCode}/status`),{partidaActual:numPartida, phase:"playing"});
-
-    // Programar decisiones de bots para esta partida
-    Object.entries(partidaData).forEach(([pairKey,pd])=>{
-      scheduleBotDecisions(numPartida, pairKey, pd, r||room);
-    });
+    Object.entries(partidaData).forEach(([pairKey,pd])=>scheduleBotDecisions(numPartida,pairKey,pd,r));
   };
 
-  // Ejecutar decisiones de bots con delay realista
   const scheduleBotDecisions = async (n, pairKey, pd, r) => {
-    const [pidA, pidB] = pd.jugadores||[];
+    const [pidA,pidB] = pd.jugadores||[];
     const isA = r?.players?.[pidA]?.isBot;
     const isB = r?.players?.[pidB]?.isBot;
     if (!isA && !isB) return;
 
     for (let ronda=1; ronda<=3; ronda++) {
-      // Esperar a que la ronda esté activa leyendo Firebase
-      await waitForRonda(n, pairKey, ronda);
-      const snap2 = await get(ref(db,`rooms/${roomCode}/partidas/${n}/${pairKey}`));
-      if (!snap2.exists()) return;
-      const pdCurrent = snap2.val();
-      if (pdCurrent.resultado) return;
+      if (ronda>1) await waitForRonda(n, pairKey, ronda);
+      const snap = await get(ref(db,`rooms/${roomCode}/partidas/${n}/${pairKey}`));
+      if (!snap.exists()||snap.val().resultado) return;
+      const pdC = snap.val();
+      const pub = (pdC.publicos||[]).slice(0,ronda-1);
 
-      const pub = (pdCurrent.publicos||[]).slice(0, ronda-1);
-
-      for (const [pid, isBot] of [[pidA,isA],[pidB,isB]]) {
+      for (const [pid,isBot] of [[pidA,isA],[pidB,isB]]) {
         if (!isBot) continue;
         const strategy = r?.players?.[pid]?.strategy||"ev_threshold";
-        const myDice   = pdCurrent.dados?.[pid]||[];
+        const myDice   = pdC.dados?.[pid]||[];
         const decision = botDecision(strategy, myDice, pub);
-        const delay    = 800 + Math.random()*1200; // 0.8-2s de "pensamiento"
+        const delay    = 800+Math.random()*1400;
         await sleep(delay);
 
-        // Verificar que la partida no terminó mientras esperaba
-        const snap3 = await get(ref(db,`rooms/${roomCode}/partidas/${n}/${pairKey}`));
-        if (!snap3.exists()||snap3.val().resultado) return;
+        const snap2 = await get(ref(db,`rooms/${roomCode}/partidas/${n}/${pairKey}`));
+        if (!snap2.exists()||snap2.val().resultado) return;
 
         const decKey = `${ronda}_${pid}`;
         await update(ref(db,`rooms/${roomCode}/partidas/${n}/${pairKey}/decisiones`),{[decKey]:decision});
 
-        // Log del bot
-        const ev = calcEV([...myDice,...pub]);
-        const logRef = push(ref(db,`rooms/${roomCode}/logs`));
-        const rival = pid===pidA?pidB:pidA;
+        const rival   = pid===pidA?pidB:pidA;
+        const ev      = calcEV(myDice,pub);
+        const logRef  = push(ref(db,`rooms/${roomCode}/logs`));
         await set(logRef,{
-          partida:n, pairKey, jugador:pid, rival,
+          partida:n,pairKey,jugador:pid,rival,
           nickname_jugador:r?.players?.[pid]?.nickname||pid,
           nickname_rival:r?.players?.[rival]?.nickname||rival,
-          accion:decision, ronda, ev, tiempo_ms:Math.floor(delay),
-          fase:pdCurrent.fases?.[pid]||"control",
+          accion:decision,ronda,ev,tiempo_ms:Math.floor(delay),
+          fase:pdC.fases?.[pid]||"control",
           suma_propia:myDice.reduce((a,b)=>a+b,0),
           suma_publica:pub.reduce((a,b)=>a+b,0),
-          resultado:null, ts:Date.now(),
+          resultado:null,ts:Date.now(),
         });
 
-        // Verificar si ambos ya decidieron para resolver
-        const snap4 = await get(ref(db,`rooms/${roomCode}/partidas/${n}/${pairKey}`));
-        if (!snap4.exists()) return;
-        const pd4 = snap4.val();
-        const rivalDec = pd4.decisiones?.[`${ronda}_${rival}`];
-        const myDec    = decision;
+        const snap3   = await get(ref(db,`rooms/${roomCode}/partidas/${n}/${pairKey}`));
+        if (!snap3.exists()) return;
+        const pd3     = snap3.val();
+        const rivalDec= pd3.decisiones?.[`${ronda}_${rival}`];
         if (rivalDec && pid < rival) {
-          const r2 = (await get(ref(db,`rooms/${roomCode}`))).val();
-          await resolveRondaDB(roomCode, r2, n, pairKey, pd4, ronda, pid, myDec, rival, rivalDec);
-          if (myDec==="retirarse"||rivalDec==="retirarse") return;
+          const rSnap = await get(ref(db,`rooms/${roomCode}`));
+          await resolveRondaDB(roomCode,rSnap.val(),n,pairKey,pd3,ronda,pid,decision,rival,rivalDec);
+          if (decision==="retirarse"||rivalDec==="retirarse") return;
         }
       }
     }
   };
 
-  const waitForRonda = (n, pairKey, targetRonda) => new Promise(resolve=>{
-    if (targetRonda===1) { resolve(); return; }
+  const waitForRonda = (n,pairKey,target) => new Promise(resolve=>{
     const r = ref(db,`rooms/${roomCode}/partidas/${n}/${pairKey}/ronda`);
-    const unsub = onValue(r, snap=>{
-      if ((snap.val()||1)>=targetRonda) { off(r); resolve(); }
-    });
+    onValue(r, snap=>{ if((snap.val()||1)>=target){ off(r); resolve(); }});
   });
 
   const startExperiment = async () => {
-    // Excluir "gestor" del emparejamiento
     const players = Object.keys(room.players||{}).filter(k=>k!=="gestor");
-    if (players.length<2) { alert("Necesitas al menos 2 jugadores"); return; }
-    const tp = room.config.totalPartidas;
-    const schedule      = buildSchedule(players, tp);
-    const faseSchedule  = buildFaseSchedule(players, tp, room.config.faseConfig);
-    const balanceInit   = {};
+    if (players.length<2){ alert("Necesitas al menos 2 jugadores"); return; }
+    const tp           = room.config.totalPartidas;
+    const schedule     = buildSchedule(players,tp);
+    const faseSchedule = buildFaseSchedule(players,tp,room.config.faseConfig);
+    const balanceInit  = {};
     players.forEach(p=>{ balanceInit[p]=10; });
     await update(ref(db,`rooms/${roomCode}`),{
-      pairs:schedule, faseSchedule,
-      "status/phase":"playing","status/partidaActual":1,
-      balance:balanceInit,
+      pairs:schedule, faseSchedule, "status/phase":"playing","status/partidaActual":1, balance:balanceInit,
     });
-    await launchPartida(1, players, schedule, faseSchedule, tp, room);
+    await launchPartida(1,players,schedule,faseSchedule,tp,room);
   };
 
   const resetSession = async ()=>{
     const players = Object.keys(room?.players||{}).filter(k=>k!=="gestor");
-    const bal = {}; players.forEach(p=>{bal[p]=10;});
+    const bal={}; players.forEach(p=>{bal[p]=10;});
     await update(ref(db,`rooms/${roomCode}`),{
-      partidas:null, logs:null, balance:bal, pairs:null, faseSchedule:null,
+      partidas:null,logs:null,balance:bal,pairs:null,faseSchedule:null,
       "status/phase":"lobby","status/partidaActual":0,
     });
+  };
+
+  const saveBotConfig = async () => {
+    // Reconstruir bots en players
+    const snap    = await get(ref(db,`rooms/${roomCode}/players`));
+    const players = snap.val()||{};
+    // Eliminar bots anteriores
+    const updates = {};
+    Object.keys(players).filter(k=>players[k].isBot).forEach(k=>{ updates[`players/${k}`]=null; });
+    for (let i=0; i<botCountL; i++) {
+      const bid = `bot_${i}`;
+      updates[`players/${bid}`] = { uid:bid, nickname:`Bot ${i+1}`, avatar:"🤖",
+        color:COLORS[(i+4)%COLORS.length], isBot:true, strategy:botStratL };
+    }
+    updates[`config/botCount`]    = botCountL;
+    updates[`config/botStrategy`] = botStratL;
+    await update(ref(db,`rooms/${roomCode}`), updates);
   };
 
   const saveConfig = ()=>update(ref(db,`rooms/${roomCode}/config`),cfgLocal);
@@ -687,29 +767,30 @@ function GestorScreen({ roomCode }) {
   const exportCSV = ()=>{
     const logs = Object.values(room?.logs||{}).sort((a,b)=>a.ts-b.ts);
     if (!logs.length) return;
-    const cols=["partida","pairKey","jugador","rival","nickname_jugador","nickname_rival","accion","ronda","ev","tiempo_ms","fase","suma_propia","suma_publica","resultado"];
+    const cols=["partida","pairKey","jugador","rival","nickname_jugador","nickname_rival","accion","ronda","ev","tiempo_ms","fase","suma_propia","suma_publica","scoreA","scoreB","resultado"];
     const rows=logs.map(l=>cols.map(c=>`"${l[c]??""}""`).join(","));
-    const csv=[cols.join(","),...rows].join("\n");
-    const url=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));
-    const a=document.createElement("a"); a.href=url; a.download=`tot_${roomCode}.csv`; a.click();
+    const blob=new Blob([[cols.join(","),...rows].join("\n")],{type:"text/csv"});
+    const a=document.createElement("a"); a.href=URL.createObjectURL(blob);
+    a.download=`tot_${roomCode}.csv`; a.click();
   };
 
   if (!room) return <div style={{color:"#666",padding:40,textAlign:"center"}}>Cargando sala…</div>;
 
   const {config,status,players,balance,partidas,logs:logsObj}=room;
   const logs        = Object.values(logsObj||{}).sort((a,b)=>a.ts-b.ts);
-  // Excluir gestor de la lista de jugadores visible en panel
   const allPlayers  = Object.entries(players||{}).filter(([k])=>k!=="gestor");
-  const humanPlayers= allPlayers.filter(([,p])=>!p.isBot);
-  const botPlayers  = allPlayers.filter(([,p])=>p.isBot);
+  const humanPl     = allPlayers.filter(([,p])=>!p.isBot);
+  const botPl       = allPlayers.filter(([,p])=>p.isBot);
   const phase       = status?.phase||"lobby";
   const pActual     = status?.partidaActual||0;
   const pData       = partidas?.[pActual]||{};
-  const TABS        = [{id:"control",label:"🎮 Control"},{id:"partidas",label:"🎲 Partidas"},{id:"datos",label:"📊 Datos"},{id:"config",label:"⚙️ Config"}];
+  const TABS = [{id:"control",label:"🎮 Control"},{id:"partidas",label:"🎲 Partidas"},
+                {id:"datos",label:"📊 Datos"},{id:"config",label:"⚙️ Config"}];
 
   return (
     <div style={{maxWidth:740,margin:"0 auto",padding:"20px 16px"}}>
       <GlobalCSS/>
+      {/* Header */}
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
         <div>
           <div style={{fontSize:11,color:"#555",fontFamily:"monospace"}}>GESTOR · SALA</div>
@@ -723,18 +804,18 @@ function GestorScreen({ roomCode }) {
         </div>
       </div>
 
+      {/* Tabs */}
       <div style={{display:"flex",gap:4,marginBottom:16,background:"#1a1a2a",borderRadius:12,padding:4}}>
         {TABS.map(t=>(
-          <button key={t.id} onClick={()=>setTab(t.id)} style={{
-            flex:1,padding:"8px 4px",background:tab===t.id?"#a855f7":"transparent",
-            border:"none",borderRadius:8,color:tab===t.id?"#fff":"#555",
-            fontWeight:700,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>
+          <button key={t.id} onClick={()=>setTab(t.id)} style={{flex:1,padding:"8px 4px",
+            background:tab===t.id?"#a855f7":"transparent",border:"none",borderRadius:8,
+            color:tab===t.id?"#fff":"#555",fontWeight:700,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>
             {t.label}
           </button>
         ))}
       </div>
 
-      {/* ── TAB CONTROL ── */}
+      {/* ── CONTROL ── */}
       {tab==="control" && (
         <div style={{display:"flex",flexDirection:"column",gap:12}}>
           <Card accent="#a855f7">
@@ -742,24 +823,24 @@ function GestorScreen({ roomCode }) {
               {!config?.open
                 ? <Btn onClick={openRoom} variant="success">Abrir sala</Btn>
                 : <Btn onClick={closeRoom} variant="danger">Cerrar sala</Btn>}
-              {phase==="lobby"&&config?.open&&
-                <Btn onClick={startExperiment}>▶ Iniciar experimento</Btn>}
-              {phase==="playing"&&
-                <Badge color="#f97316">⚡ Auto-avance activo</Badge>}
-              {phase==="finished"&&
-                <Btn onClick={resetSession} variant="ghost">↺ Nueva sesión</Btn>}
-              {phase!=="finished"&&
-                <Btn onClick={resetSession} variant="ghost">↺ Reiniciar</Btn>}
+              {phase==="lobby"&&config?.open&&<Btn onClick={startExperiment}>▶ Iniciar</Btn>}
+              {phase==="playing"&&(
+                <Btn onClick={stopAll} variant="warning">⏹ Parar → Lobby</Btn>
+              )}
+              <Btn onClick={resetSession} variant="ghost">↺ Reiniciar sesión</Btn>
             </div>
+            {phase==="playing"&&(
+              <div style={{marginTop:8,fontSize:12,color:"#555"}}>
+                ⚡ Auto-avance activo — las partidas avanzan solas
+              </div>
+            )}
           </Card>
 
           {/* Jugadores humanos */}
           <Card>
-            <div style={{fontSize:11,color:"#555",marginBottom:10}}>
-              JUGADORES HUMANOS ({humanPlayers.length})
-            </div>
+            <div style={{fontSize:11,color:"#555",marginBottom:10}}>JUGADORES HUMANOS ({humanPl.length})</div>
             <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
-              {humanPlayers.map(([uid,p])=>(
+              {humanPl.map(([uid,p])=>(
                 <div key={uid} style={{background:"#1a1a2a",borderRadius:10,padding:"8px 14px",
                   border:`1px solid ${p.color}44`,display:"flex",alignItems:"center",gap:8}}>
                   <span style={{fontSize:22}}>{p.avatar}</span>
@@ -769,18 +850,17 @@ function GestorScreen({ roomCode }) {
                   </div>
                 </div>
               ))}
-              {!humanPlayers.length&&<span style={{color:"#444",fontSize:13}}>Esperando jugadores…</span>}
+              {!humanPl.length&&<span style={{color:"#444",fontSize:13}}>Esperando jugadores…</span>}
             </div>
           </Card>
 
-          {/* Bots */}
-          {botPlayers.length>0 && (
+          {botPl.length>0&&(
             <Card accent="#22c55e">
               <div style={{fontSize:11,color:"#22c55e",marginBottom:10}}>
-                BOTS ({botPlayers.length}) · Estrategia: {BOT_STRATEGIES.find(s=>s.id===config?.botStrategy)?.label||"?"}
+                BOTS ({botPl.length}) · {BOT_STRATEGIES.find(s=>s.id===config?.botStrategy)?.label}
               </div>
               <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
-                {botPlayers.map(([uid,p])=>(
+                {botPl.map(([uid,p])=>(
                   <div key={uid} style={{background:"#1a1a2a",borderRadius:10,padding:"7px 12px",
                     border:"1px solid #22c55e33",display:"flex",alignItems:"center",gap:6}}>
                     <span style={{fontSize:18}}>🤖</span>
@@ -794,40 +874,43 @@ function GestorScreen({ roomCode }) {
             </Card>
           )}
 
-          {/* Estado pares en juego */}
-          {phase==="playing" && Object.entries(pData).map(([pairKey,pd])=>{
+          {/* Pares en juego */}
+          {phase==="playing"&&Object.entries(pData).map(([pairKey,pd])=>{
             const [pA,pB]=pd.jugadores||[];
             const plA=players?.[pA]; const plB=players?.[pB];
-            const allDone = pd.resultado;
+            const pub=pd.publicos||[];
             return (
-              <Card key={pairKey} accent={allDone?"#22c55e":"#f97316"}>
+              <Card key={pairKey} accent={pd.resultado?"#22c55e":"#f97316"}>
                 <div style={{fontSize:11,color:"#555",marginBottom:8}}>
-                  PAR {allDone?"✓ TERMINADO":"EN JUEGO"}
+                  {pd.resultado?"✓ TERMINADO":"EN JUEGO"} · R{pd.ronda}/3
                 </div>
-                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-                  {[[pA,plA],[pB,plB]].map(([pid,pl])=>pl&&(
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:8}}>
+                  {[[pA,plA,pd.scoreA,pd.best3A],[pB,plB,pd.scoreB,pd.best3B]].map(([pid,pl,score,best3])=>pl&&(
                     <div key={pid}>
-                      <div style={{color:pl.color,fontWeight:700}}>
+                      <div style={{color:pl.color,fontWeight:700,fontSize:13}}>
                         {pl.isBot?"🤖":pl.avatar} {pl.nickname}
-                        {pl.isBot&&<span style={{color:"#555",fontSize:11}}> (bot)</span>}
+                      </div>
+                      <div style={{fontSize:11,color:"#555",fontFamily:"monospace",marginTop:2}}>
+                        Dados: {(pd.dados?.[pid]||[]).join(" | ")}
+                      </div>
+                      {score!==null&&score!==undefined&&(
+                        <div style={{fontSize:11,color:"#f97316",marginTop:2}}>
+                          Top3: [{(best3||[]).join(",")}] = <b>{score}</b>
+                        </div>
+                      )}
+                      <div style={{fontSize:11,color:pd.decisiones?.[`${pd.ronda}_${pid}`]?"#22c55e":"#555",marginTop:2}}>
+                        R{pd.ronda}: {pd.decisiones?.[`${pd.ronda}_${pid}`]||"⏳"}
                       </div>
                       <div style={{fontSize:11,color:"#555",marginTop:2}}>
-                        Dados: <span style={{color:"#aaa",fontFamily:"monospace"}}>{(pd.dados?.[pid]||[]).join("|")}</span>
-                        {" · "}Fase: <span style={{color:"#aaa"}}>{pd.fases?.[pid]||"-"}</span>
-                      </div>
-                      <div style={{fontSize:11,color:pd.decisiones?.[`${pd.ronda}_${pid}`]?"#22c55e":"#555"}}>
-                        R{pd.ronda}: {pd.decisiones?.[`${pd.ronda}_${pid}`]||"⏳"}
+                        Fase: <span style={{color:"#aaa"}}>{pd.fases?.[pid]||"-"}</span>
                       </div>
                     </div>
                   ))}
                 </div>
-                <div style={{marginTop:8,fontSize:11,color:"#a855f7"}}>
-                  Públicos: {(pd.publicos||[]).map((v,i)=>i<(pd.ronda||1)-1?v:"?").join("|")}
-                  {" · "}R{pd.ronda}/3{" · "}Pozo {pd.pot}
+                <div style={{fontSize:11,color:"#a855f7"}}>
+                  Públicos: [{pub.map((v,i)=>i<(pd.ronda||1)-1?v:"?").join(",")}] · Pozo: {pd.pot}
                 </div>
-                {pd.resultado&&<div style={{marginTop:6,color:"#22c55e",fontWeight:700,fontSize:13}}>
-                  ✓ {pd.resultado}
-                </div>}
+                {pd.resultado&&<div style={{marginTop:6,color:"#22c55e",fontWeight:700}}>{pd.resultado}</div>}
               </Card>
             );
           })}
@@ -836,7 +919,7 @@ function GestorScreen({ roomCode }) {
             <Card style={{textAlign:"center",padding:32}}>
               <div style={{fontSize:48}}>🏆</div>
               <h2 style={{color:"#22c55e",marginTop:8}}>Experimento completado</h2>
-              <div style={{display:"flex",gap:10,justifyContent:"center",flexWrap:"wrap",marginTop:16}}>
+              <div style={{display:"flex",gap:10,justifyContent:"center",marginTop:16,flexWrap:"wrap"}}>
                 <Btn onClick={exportCSV} variant="success">⬇ Exportar CSV</Btn>
                 <Btn onClick={resetSession} variant="ghost">↺ Nueva sesión</Btn>
               </div>
@@ -845,20 +928,19 @@ function GestorScreen({ roomCode }) {
         </div>
       )}
 
-      {/* ── TAB PARTIDAS ── */}
-      {tab==="partidas" && (
+      {/* ── PARTIDAS ── */}
+      {tab==="partidas"&&(
         <div style={{display:"flex",flexDirection:"column",gap:10}}>
           {Array.from({length:config?.totalPartidas||5},(_,i)=>i+1).map(n=>{
-            const done=n<pActual, current=n===pActual;
-            const pd=partidas?.[n]||{};
+            const done=n<pActual, cur=n===pActual, pd=partidas?.[n]||{};
             return (
-              <Card key={n} accent={current?"#f97316":done?"#22c55e44":"#2a2a3a"}>
+              <Card key={n} accent={cur?"#f97316":done?"#22c55e44":"#2a2a3a"}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                  <span style={{fontWeight:700,color:current?"#f97316":done?"#22c55e":"#555"}}>
-                    Partida {n}{current&&" ← actual"}{done&&" ✓"}
+                  <span style={{fontWeight:700,color:cur?"#f97316":done?"#22c55e":"#555"}}>
+                    Partida {n}{cur&&" ← actual"}{done&&" ✓"}
                   </span>
-                  <Badge color={current?"#f97316":done?"#22c55e":"#444"}>
-                    {current?"EN JUEGO":done?"COMPLETADA":"PENDIENTE"}
+                  <Badge color={cur?"#f97316":done?"#22c55e":"#444"}>
+                    {cur?"EN JUEGO":done?"COMPLETADA":"PENDIENTE"}
                   </Badge>
                 </div>
                 {Object.entries(pd).map(([pk,d])=>(
@@ -873,37 +955,39 @@ function GestorScreen({ roomCode }) {
         </div>
       )}
 
-      {/* ── TAB DATOS ── */}
-      {tab==="datos" && (
+      {/* ── DATOS ── */}
+      {tab==="datos"&&(
         <div>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
-            <span style={{color:"#555",fontSize:13}}>{logs.length} eventos registrados</span>
-            <Btn onClick={exportCSV} variant="success" style={{fontSize:13,padding:"7px 16px"}}>⬇ Exportar CSV</Btn>
+            <span style={{color:"#555",fontSize:13}}>{logs.length} eventos</span>
+            <Btn onClick={exportCSV} variant="success" style={{fontSize:13,padding:"7px 16px"}}>⬇ CSV</Btn>
           </div>
           <Card>
             <div style={{overflowX:"auto"}}>
               <table style={{width:"100%",borderCollapse:"collapse",fontSize:11,fontFamily:"monospace"}}>
                 <thead>
-                  <tr>{["Part.","Jugador","Rival","Acción","Ronda","EV","Tiempo","Fase","Resultado"].map(h=>(
-                    <th key={h} style={{color:"#444",padding:"5px 8px",textAlign:"left",borderBottom:"1px solid #1e1e2e"}}>{h}</th>
+                  <tr>{["Part.","Jugador","Rival","Acción","Ronda","EV","T(ms)","Fase","ScA","ScB","Resultado"].map(h=>(
+                    <th key={h} style={{color:"#444",padding:"5px 6px",textAlign:"left",borderBottom:"1px solid #1e1e2e"}}>{h}</th>
                   ))}</tr>
                 </thead>
                 <tbody>
                   {logs.slice(-80).reverse().map((l,i)=>(
                     <tr key={i} style={{borderBottom:"1px solid #141420"}}>
-                      <td style={{padding:"4px 8px",color:"#555"}}>{l.partida}</td>
-                      <td style={{padding:"4px 8px",color:players?.[l.jugador]?.color||"#aaa",fontWeight:700}}>
+                      <td style={{padding:"3px 6px",color:"#555"}}>{l.partida}</td>
+                      <td style={{padding:"3px 6px",color:players?.[l.jugador]?.color||"#aaa",fontWeight:700}}>
                         {players?.[l.jugador]?.nickname||l.jugador}
                       </td>
-                      <td style={{padding:"4px 8px",color:players?.[l.rival]?.color||"#555"}}>
+                      <td style={{padding:"3px 6px",color:players?.[l.rival]?.color||"#555"}}>
                         {players?.[l.rival]?.nickname||l.rival}
                       </td>
-                      <td style={{padding:"4px 8px",color:l.accion==="apostar"?"#22c55e":"#ef4444"}}>{l.accion}</td>
-                      <td style={{padding:"4px 8px",color:"#aaa"}}>{l.ronda}</td>
-                      <td style={{padding:"4px 8px",color:"#a855f7"}}>{((l.ev||0)*100).toFixed(0)}%</td>
-                      <td style={{padding:"4px 8px",color:"#555"}}>{l.tiempo_ms}</td>
-                      <td style={{padding:"4px 8px",color:"#555",fontSize:10}}>{l.fase}</td>
-                      <td style={{padding:"4px 8px",color:"#22c55e"}}>{l.resultado||""}</td>
+                      <td style={{padding:"3px 6px",color:l.accion==="apostar"?"#22c55e":"#ef4444"}}>{l.accion}</td>
+                      <td style={{padding:"3px 6px",color:"#aaa"}}>{l.ronda}</td>
+                      <td style={{padding:"3px 6px",color:"#a855f7"}}>{((l.ev||0)*100).toFixed(0)}%</td>
+                      <td style={{padding:"3px 6px",color:"#555"}}>{l.tiempo_ms}</td>
+                      <td style={{padding:"3px 6px",color:"#555",fontSize:10}}>{l.fase}</td>
+                      <td style={{padding:"3px 6px",color:"#f97316"}}>{l.scoreA??""}</td>
+                      <td style={{padding:"3px 6px",color:"#3b82f6"}}>{l.scoreB??""}</td>
+                      <td style={{padding:"3px 6px",color:"#22c55e"}}>{l.resultado||""}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -914,34 +998,42 @@ function GestorScreen({ roomCode }) {
         </div>
       )}
 
-      {/* ── TAB CONFIG ── */}
-      {tab==="config" && cfgLocal && (
-        <Card accent="#a855f7">
-          <div style={{fontSize:12,color:"#555",marginBottom:16}}>CONFIGURACIÓN EN VIVO</div>
-          <label style={{color:"#777",fontSize:13,display:"flex",alignItems:"center",gap:10,marginBottom:14,cursor:"pointer"}}>
-            <input type="checkbox" checked={!!cfgLocal.showEV}
-              onChange={e=>setCfgLocal(c=>({...c,showEV:e.target.checked}))}
-              style={{accentColor:"#f97316",width:16,height:16}}/>
-            Mostrar barra de EV a los jugadores
-          </label>
-          <label style={{color:"#777",fontSize:13,display:"block",marginBottom:6}}>
-            Temporizador por ronda: <span style={{color:"#f97316"}}>
-              {cfgLocal.timerSecs===0?"Sin límite":`${cfgLocal.timerSecs}s`}
-            </span>
-          </label>
-          <input type="range" min={0} max={60} step={5} value={cfgLocal.timerSecs||0}
-            onChange={e=>setCfgLocal(c=>({...c,timerSecs:+e.target.value}))}
-            style={{width:"100%",marginBottom:20,accentColor:"#f97316"}}/>
-          <Btn onClick={saveConfig} variant="purple" style={{width:"100%",marginBottom:20}}>
-            Guardar cambios
+      {/* ── CONFIG ── */}
+      {tab==="config"&&cfgLocal&&(
+        <div style={{display:"flex",flexDirection:"column",gap:12}}>
+          <Card accent="#a855f7">
+            <div style={{fontSize:12,color:"#555",marginBottom:16}}>OPCIONES DE JUEGO</div>
+            <label style={{color:"#777",fontSize:13,display:"flex",alignItems:"center",gap:10,marginBottom:14,cursor:"pointer"}}>
+              <input type="checkbox" checked={!!cfgLocal.showEV}
+                onChange={e=>setCfgLocal(c=>({...c,showEV:e.target.checked}))}
+                style={{accentColor:"#f97316",width:16,height:16}}/>
+              Mostrar barra de EV a los jugadores
+            </label>
+            <label style={{color:"#777",fontSize:13,display:"block",marginBottom:6}}>
+              Temporizador por ronda:{" "}
+              <span style={{color:"#f97316"}}>{cfgLocal.timerSecs===0?"Sin límite":`${cfgLocal.timerSecs}s`}</span>
+              {cfgLocal.timerSecs>0&&<span style={{color:"#555",fontSize:11}}> (al vencer → se asume apostar)</span>}
+            </label>
+            <input type="range" min={0} max={60} step={5} value={cfgLocal.timerSecs||0}
+              onChange={e=>setCfgLocal(c=>({...c,timerSecs:+e.target.value}))}
+              style={{width:"100%",marginBottom:16,accentColor:"#f97316"}}/>
+            <Btn onClick={saveConfig} variant="purple" style={{width:"100%"}}>Guardar cambios</Btn>
+          </Card>
+
+          <BotConfig botCount={botCountL} setBotCount={setBotCountL}
+            botStrategy={botStratL} setBotStrategy={setBotStratL}/>
+          <Btn onClick={saveBotConfig} variant="success" style={{width:"100%"}}>
+            Aplicar configuración de bots
           </Btn>
-          <hr style={{border:"none",borderTop:"1px solid #1e1e2e",margin:"16px 0"}}/>
-          <div style={{fontSize:11,color:"#555",marginBottom:8}}>CÓDIGO DE SALA</div>
-          <div style={{fontFamily:"monospace",fontSize:30,letterSpacing:8,color:"#f97316",
-            fontWeight:900,background:"#0a0a0f",padding:"14px 20px",borderRadius:10,textAlign:"center"}}>
-            {roomCode}
-          </div>
-        </Card>
+
+          <Card>
+            <div style={{fontSize:11,color:"#555",marginBottom:8}}>CÓDIGO DE SALA</div>
+            <div style={{fontFamily:"monospace",fontSize:30,letterSpacing:8,color:"#f97316",
+              fontWeight:900,background:"#0a0a0f",padding:"14px 20px",borderRadius:10,textAlign:"center"}}>
+              {roomCode}
+            </div>
+          </Card>
+        </div>
       )}
     </div>
   );
@@ -956,7 +1048,8 @@ function PlayerScreen({ roomCode, playerId, profile }) {
   const prevRondaRef    = useRef(null);
   const prevPartidaRef  = useRef(null);
   const timerRef        = useRef(null);
-  const resolvedRef     = useRef(new Set()); // evitar doble resolución
+  const resolvedRef     = useRef(new Set());
+  const autoFoldRef     = useRef(null); // para el timer de auto-apostar
 
   useEffect(()=>{
     const r=ref(db,`rooms/${roomCode}`);
@@ -964,8 +1057,8 @@ function PlayerScreen({ roomCode, playerId, profile }) {
     return ()=>off(r);
   },[roomCode]);
 
-  const getMyPair  = useCallback((r,n)=> Object.values(r?.partidas?.[n]||{}).find(p=>(p.jugadores||[]).includes(playerId))||null,[playerId]);
-  const getPairKey = useCallback((r,n)=> Object.keys(r?.partidas?.[n]||{}).find(k=>(r.partidas[n][k].jugadores||[]).includes(playerId))||null,[playerId]);
+  const getMyPair  = useCallback((r,n)=>Object.values(r?.partidas?.[n]||{}).find(p=>(p.jugadores||[]).includes(playerId))||null,[playerId]);
+  const getPairKey = useCallback((r,n)=>Object.keys(r?.partidas?.[n]||{}).find(k=>(r.partidas[n][k].jugadores||[]).includes(playerId))||null,[playerId]);
 
   // Animaciones por cambio de ronda/partida
   useEffect(()=>{
@@ -977,38 +1070,52 @@ function PlayerScreen({ roomCode, playerId, profile }) {
 
     if (prevRondaRef.current!==null && ronda!==prevRondaRef.current) {
       setDecidido(false);
+      clearTimeout(autoFoldRef.current);
       if (ronda<=3&&!myPair.resultado) {
         setOverlay({type:"rolling",msg:
           ronda===1?"🎲 ¡Dados lanzados!":
           ronda===2?"🌐 Primer dado público revelado":
-                    "🌐 Segundo dado público revelado"});
-        setTimeout(()=>setOverlay(null), 1800);
+                    "🌐 Segundo dado público — ¡última ronda!"});
+        setTimeout(()=>setOverlay(null),1800);
       }
     }
     if (prevPartidaRef.current!==null && n!==prevPartidaRef.current && n>0) {
       setDecidido(false);
       resolvedRef.current.clear();
+      clearTimeout(autoFoldRef.current);
       setOverlay({type:"next",msg:`⚔️ ¡Partida ${n} comenzando!`});
-      setTimeout(()=>setOverlay(null), 1800);
+      setTimeout(()=>setOverlay(null),1800);
     }
     prevRondaRef.current   = ronda;
     prevPartidaRef.current = n;
   },[room]);
 
-  // Timer
+  // Timer circular + auto-apostar al vencer
   useEffect(()=>{
     clearInterval(timerRef.current);
+    clearTimeout(autoFoldRef.current);
     if (!room) return;
     const secs = room.config?.timerSecs||0;
     if (!secs) { setTimer(null); return; }
-    const myPair = getMyPair(room, room.status?.partidaActual||0);
+    const myPair = getMyPair(room,room.status?.partidaActual||0);
     if (!myPair||myPair.resultado) { setTimer(null); return; }
-    const elapsed = Math.floor((Date.now()-(myPair.startedAt||Date.now()))/1000);
-    const left = Math.max(0,secs-elapsed);
+    const ronda = myPair.ronda||1;
+    if (ronda>3) { setTimer(null); return; }
+    // Resetear al inicio de cada ronda
+    const startedAt = myPair.startedAt||Date.now();
+    const elapsed   = Math.floor((Date.now()-startedAt)/1000);
+    const left      = Math.max(0, secs-elapsed);
     setTimer(left);
-    timerRef.current=setInterval(()=>setTimer(l=>Math.max(0,(l||0)-1)),1000);
-    return ()=>clearInterval(timerRef.current);
-  },[room?.status?.partidaActual, room?.config?.timerSecs]);
+    timerRef.current = setInterval(()=>setTimer(l=>Math.max(0,(l||0)-1)),1000);
+    // Auto-apostar cuando llega a 0
+    if (left > 0) {
+      autoFoldRef.current = setTimeout(()=>{
+        setTimer(0);
+        decidir("apostar"); // tiempo agotado → apostar automáticamente
+      }, left*1000);
+    }
+    return ()=>{ clearInterval(timerRef.current); clearTimeout(autoFoldRef.current); };
+  },[room?.status?.partidaActual, room?.config?.timerSecs, (getMyPair(room, room?.status?.partidaActual||0)||{}).ronda]);
 
   // Detectar cuando el rival decidió mientras yo ya había decidido
   useEffect(()=>{
@@ -1022,28 +1129,33 @@ function PlayerScreen({ roomCode, playerId, profile }) {
     const rival  = (pd.jugadores||[]).find(j=>j!==playerId);
     const myDec  = pd.decisiones?.[`${ronda}_${playerId}`];
     const rivDec = pd.decisiones?.[`${ronda}_${rival}`];
-    const resolveKey = `${n}_${pairKey}_${ronda}`;
-    if (myDec && rivDec && !resolvedRef.current.has(resolveKey) && playerId < rival) {
-      resolvedRef.current.add(resolveKey);
+    const rk     = `${n}_${pairKey}_${ronda}`;
+    if (myDec&&rivDec&&!resolvedRef.current.has(rk)&&playerId<rival) {
+      resolvedRef.current.add(rk);
       setOverlay(null);
-      resolveRondaDB(roomCode, room, n, pairKey, pd, ronda, playerId, myDec, rival, rivDec);
+      resolveRondaDB(roomCode,room,n,pairKey,pd,ronda,playerId,myDec,rival,rivDec);
     }
-  },[room, decidido]);
+  },[room,decidido]);
 
-  const decidir = async (accion) => {
+  const decidir = useCallback(async (accion) => {
     if (decidido) return;
+    if (!room) return;
     const n = room.status?.partidaActual||0;
     const pairKey = getPairKey(room,n);
     if (!pairKey) return;
-    const pd    = room.partidas[n][pairKey];
+    const pd    = room.partidas?.[n]?.[pairKey];
+    if (!pd||pd.resultado) return;
     const ronda = pd.ronda||1;
     const rival = (pd.jugadores||[]).find(j=>j!==playerId);
     const myDice= pd.dados?.[playerId]||[];
     const pubVis= (pd.publicos||[]).slice(0,ronda-1);
-    const ev    = calcEV([...myDice,...pubVis]);
+    const ev    = calcEV(myDice,pubVis);
     const tiempo= Date.now()-(pd.startedAt||Date.now());
 
     setDecidido(true);
+    clearTimeout(autoFoldRef.current);
+    clearInterval(timerRef.current);
+    setTimer(null);
     setOverlay({type:"waiting",msg:"Esperando al otro jugador…"});
 
     const decKey = `${ronda}_${playerId}`;
@@ -1051,30 +1163,28 @@ function PlayerScreen({ roomCode, playerId, profile }) {
 
     const logRef = push(ref(db,`rooms/${roomCode}/logs`));
     await set(logRef,{
-      partida:n, pairKey, jugador:playerId, rival,
+      partida:n,pairKey,jugador:playerId,rival,
       nickname_jugador:profile?.nickname||"",
       nickname_rival:room.players?.[rival]?.nickname||"",
-      accion, ronda, ev, tiempo_ms:tiempo,
+      accion,ronda,ev,tiempo_ms:tiempo,
       fase:pd.fases?.[playerId]||"control",
       suma_propia:myDice.reduce((a,b)=>a+b,0),
       suma_publica:pubVis.reduce((a,b)=>a+b,0),
-      resultado:null, ts:Date.now(),
+      resultado:null,ts:Date.now(),
     });
 
-    // Si el rival ya había decidido, resolver ahora
     const rivalDec = pd.decisiones?.[`${ronda}_${rival}`];
-    const resolveKey = `${n}_${pairKey}_${ronda}`;
-    if (rivalDec && !resolvedRef.current.has(resolveKey) && playerId < rival) {
-      resolvedRef.current.add(resolveKey);
+    const rk = `${n}_${pairKey}_${ronda}`;
+    if (rivalDec&&!resolvedRef.current.has(rk)&&playerId<rival) {
+      resolvedRef.current.add(rk);
       setOverlay(null);
-      await resolveRondaDB(roomCode, room, n, pairKey, pd, ronda, playerId, accion, rival, rivalDec);
+      await resolveRondaDB(roomCode,room,n,pairKey,pd,ronda,playerId,accion,rival,rivalDec);
     }
-  };
+  },[decidido,room,playerId,roomCode,profile]);
 
   // ── RENDER ──────────────────────────────────────────────────────────────────
   if (!room) return (
-    <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
-      minHeight:"70vh",color:"#555",gap:16}}>
+    <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",minHeight:"70vh",color:"#555",gap:16}}>
       <GlobalCSS/>
       <div style={{fontSize:40,animation:"spin 1s linear infinite",display:"inline-block"}}>⚙️</div>
       <div>Conectando…</div>
@@ -1119,53 +1229,78 @@ function PlayerScreen({ roomCode, playerId, profile }) {
   const myDice    = myPair.dados?.[playerId]||[];
   const ronda     = myPair.ronda||1;
   const pubAll    = myPair.publicos||[];
-  const pubDice   = pubAll.map((v,i)=>({value:v,visible:i<ronda-1}));
+  const pubVisible= pubAll.slice(0,ronda-1);
+  const pubHidden = pubAll.slice(ronda-1);
   const pot       = myPair.pot||0;
   const resultado = myPair.resultado||null;
+  const ganador   = myPair.ganador||null;
   const fase      = myPair.fases?.[playerId]||"control";
   const canCheat  = fase==="yo_trampo"||fase==="ambos";
   const rivalDice = myPair.dados?.[rival]||[];
-  const mySum     = myDice.reduce((a,b)=>a+b,0);
-  const pubVis    = pubDice.filter(d=>d.visible).map(d=>d.value);
-  const pubSum    = pubVis.reduce((a,b)=>a+b,0);
-  const totalVis  = mySum+pubSum;
-  const ev        = myDice.length?calcEV([...myDice,...pubVis]):0;
   const yaDecidio = !!myPair.decisiones?.[`${ronda}_${playerId}`];
   const rivDecidio= !!myPair.decisiones?.[`${ronda}_${rival}`];
   const isShaking = overlay?.type==="rolling";
+  const timerSecs = config?.timerSecs||0;
+
+  // Calcular top3 para mostrar al jugador
+  const { score:myScore, best3:myBest3 } = top3score(myDice, pubVisible);
+  const ev = myDice.length ? calcEV(myDice, pubVisible) : 0;
 
   // RESULTADO
   if (resultado) {
-    const gane   = resultado.includes(profile?.nickname||"___NOBODY___");
-    const empate = resultado==="Empate";
+    const gane   = ganador===playerId;
+    const casa   = ganador==="casa";
+    const pub    = myPair.publicos||[];
+    const myFinalScore = myPair.scoreA!==undefined
+      ? (myPair.jugadores[0]===playerId ? myPair.scoreA : myPair.scoreB) : null;
+    const rivalFinalScore = myPair.scoreA!==undefined
+      ? (myPair.jugadores[0]===playerId ? myPair.scoreB : myPair.scoreA) : null;
+    const myBest3Final = myPair.jugadores[0]===playerId ? myPair.best3A : myPair.best3B;
+    const rivalBest3   = myPair.jugadores[0]===playerId ? myPair.best3B : myPair.best3A;
+
     return (
       <div style={{maxWidth:420,margin:"0 auto",padding:"24px 16px"}}>
         <GlobalCSS/>
         <Overlay show={true}>
-          <Card style={{maxWidth:340,textAlign:"center",padding:40,animation:"popIn 0.4s ease",
-            border:`1px solid ${empate?"#aaa":gane?"#22c55e":"#ef4444"}44`}}>
-            <div style={{fontSize:80,marginBottom:8,animation:"popIn 0.5s ease"}}>
-              {empate?"🤝":gane?"🏆":"💀"}
+          <Card style={{maxWidth:350,textAlign:"center",padding:36,animation:"popIn 0.4s ease",
+            border:`1px solid ${gane?"#22c55e":casa?"#a855f7":"#ef4444"}44`,maxHeight:"90vh",overflowY:"auto"}}>
+            <div style={{fontSize:72,animation:"popIn 0.5s ease 0.1s both"}}>
+              {casa?"🏠":gane?"🏆":"💀"}
             </div>
-            <h2 style={{color:empate?"#aaa":gane?"#22c55e":"#ef4444",marginBottom:8,fontSize:24}}>
-              {empate?"¡Empate!":gane?"¡Ganaste!":"¡Perdiste!"}
+            <h2 style={{color:gane?"#22c55e":casa?"#a855f7":"#ef4444",marginBottom:8,fontSize:22,marginTop:8}}>
+              {casa?"La casa gana":gane?"¡Ganaste!":"¡Perdiste!"}
             </h2>
             <p style={{color:"#666",fontSize:13,marginBottom:16}}>{resultado}</p>
-            <div style={{background:"#0a0a0f",borderRadius:10,padding:12,marginBottom:14,textAlign:"left"}}>
-              <div style={{fontSize:12,color:"#555",marginBottom:4}}>
-                Mis dados: <span style={{color:myColor,fontWeight:700}}>{myDice.join(" + ")} = {mySum}</span>
+
+            {/* Comparación de manos */}
+            {myFinalScore!==null && (
+              <div style={{background:"#0a0a0f",borderRadius:12,padding:14,marginBottom:14,textAlign:"left"}}>
+                <div style={{fontSize:11,color:"#555",marginBottom:8,textAlign:"center"}}>RESULTADO FINAL</div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                  <div style={{textAlign:"center"}}>
+                    <div style={{fontSize:11,color:myColor,marginBottom:4}}>{profile?.nickname}</div>
+                    <div style={{display:"flex",gap:4,justifyContent:"center",flexWrap:"wrap"}}>
+                      {(myBest3Final||[]).map((v,i)=>(
+                        <Die key={i} value={v} size={32} color={myColor} glow selected/>
+                      ))}
+                    </div>
+                    <div style={{fontSize:18,fontWeight:900,color:myColor,marginTop:6}}>= {myFinalScore}</div>
+                    <div style={{fontSize:10,color:"#555"}}>dados: {myDice.join("+")} | pub: {pub.join("+")}</div>
+                  </div>
+                  <div style={{textAlign:"center"}}>
+                    <div style={{fontSize:11,color:rivalInfo?.color||"#aaa",marginBottom:4}}>{rivalInfo?.nickname}</div>
+                    <div style={{display:"flex",gap:4,justifyContent:"center",flexWrap:"wrap"}}>
+                      {(rivalBest3||[]).map((v,i)=>(
+                        <Die key={i} value={v} size={32} color={rivalInfo?.color||"#aaa"} glow selected/>
+                      ))}
+                    </div>
+                    <div style={{fontSize:18,fontWeight:900,color:rivalInfo?.color||"#aaa",marginTop:6}}>= {rivalFinalScore}</div>
+                    <div style={{fontSize:10,color:"#555"}}>dados: {rivalDice.join("+")} | pub: {pub.join("+")}</div>
+                  </div>
+                </div>
               </div>
-              <div style={{fontSize:12,color:"#555",marginBottom:4}}>
-                Públicos: <span style={{color:"#22c55e",fontWeight:700}}>{pubAll.join(" + ")} = {pubAll.reduce((a,b)=>a+b,0)}</span>
-              </div>
-              <div style={{fontSize:12,color:"#555"}}>
-                Rival: <span style={{color:rivalInfo?.color,fontWeight:700}}>{rivalDice.join(" + ")} = {rivalDice.reduce((a,b)=>a+b,0)}</span>
-              </div>
-              <div style={{borderTop:"1px solid #1e1e2e",marginTop:8,paddingTop:8,
-                fontSize:14,fontWeight:700,color:"#fff"}}>
-                Mi total: {mySum+pubAll.reduce((a,b)=>a+b,0)}
-              </div>
-            </div>
+            )}
+
             <div style={{fontSize:22,fontWeight:900,color:"#f97316",marginBottom:4}}>💰 {myBal} fichas</div>
             <p style={{color:"#555",fontSize:12}}>Espera la siguiente partida…</p>
           </Card>
@@ -1180,19 +1315,20 @@ function PlayerScreen({ roomCode, playerId, profile }) {
     <div style={{maxWidth:420,margin:"0 auto",padding:"16px 16px 80px"}}>
       <GlobalCSS/>
 
-      {/* Overlays */}
       <Overlay show={overlay?.type==="rolling"}>
         <div style={{textAlign:"center"}}>
           <div style={{fontSize:88,display:"inline-block",animation:"shakeDie 0.4s ease infinite"}}>🎲</div>
-          <div style={{color:"#f97316",fontWeight:700,fontSize:18,marginTop:12,maxWidth:280,
-            animation:"slideUp 0.3s ease"}}>{overlay?.msg}</div>
+          <div style={{color:"#f97316",fontWeight:700,fontSize:18,marginTop:12,maxWidth:280,animation:"slideUp 0.3s ease"}}>
+            {overlay?.msg}
+          </div>
         </div>
       </Overlay>
 
       <Overlay show={overlay?.type==="waiting"}>
         <div style={{textAlign:"center"}}>
           <div style={{fontSize:60,display:"inline-block",animation:"pulse 1.2s infinite"}}>⏳</div>
-          <div style={{color:"#aaa",fontSize:16,marginTop:14,animation:"slideUp 0.3s ease"}}>{overlay?.msg}</div>
+          <div style={{color:"#aaa",fontSize:16,marginTop:14}}>{overlay?.msg}</div>
+          {rivDecidio&&<Badge color="#22c55e" style={{marginTop:10}}>✓ Rival ya decidió</Badge>}
         </div>
       </Overlay>
 
@@ -1205,14 +1341,9 @@ function PlayerScreen({ roomCode, playerId, profile }) {
 
       <PlayerHeader profile={profile} balance={myBal} roomCode={roomCode} partida={n} total={config?.totalPartidas}/>
 
-      {/* Timer */}
-      {timerLeft!==null&&(
-        <div style={{textAlign:"center",margin:"4px 0"}}>
-          <span style={{fontFamily:"monospace",fontSize:20,fontWeight:900,
-            color:timerLeft<=5?"#ef4444":timerLeft<=15?"#eab308":"#555"}}>
-            ⏱ {timerLeft}s
-          </span>
-        </div>
+      {/* Timer circular */}
+      {timerSecs>0&&timerLeft!==null&&!yaDecidio&&(
+        <TimerCircle seconds={timerLeft} total={timerSecs}/>
       )}
 
       {/* Progress rondas */}
@@ -1229,33 +1360,50 @@ function PlayerScreen({ roomCode, playerId, profile }) {
         ))}
       </div>
 
-      {/* Mis dados */}
+      {/* Mis dados + top3 */}
       <Card accent={myColor} style={{marginBottom:10}}>
         <div style={{fontSize:11,color:"#555",marginBottom:8}}>TUS DADOS</div>
-        <DiceRow dice={myDice} size={58} color={myColor} shake={isShaking}/>
-        <div style={{marginTop:12,display:"flex",justifyContent:"center",gap:5,alignItems:"center",
-          flexWrap:"wrap",fontSize:16,fontWeight:700}}>
-          {myDice.map((v,i,arr)=>[
+        <div style={{display:"flex",gap:10,justifyContent:"center",marginBottom:12}}>
+          {myDice.map((v,i)=>(
+            <Die key={i} value={v} size={58} color={myColor} shake={isShaking}
+              selected={myBest3.includes(v)&&myBest3.indexOf(v)===myDice.slice(0,i+1).filter(x=>myBest3.includes(x)&&myDice.slice(0,myDice.indexOf(x)+1).filter(y=>y===x).length<=myBest3.filter(y=>y===x).length).length-1}
+            />
+          ))}
+        </div>
+        {/* Suma visual */}
+        <div style={{display:"flex",justifyContent:"center",gap:5,alignItems:"center",
+          flexWrap:"wrap",fontSize:15,fontWeight:700}}>
+          {myBest3.map((v,i)=>[
             <span key={i} style={{color:myColor}}>{v}</span>,
-            i<arr.length-1&&<span key={`op${i}`} style={{color:"#333"}}>+</span>
+            i<myBest3.length-1&&<span key={`op${i}`} style={{color:"#333"}}>+</span>
           ])}
-          {pubVis.map((v,i)=><span key={`pv${i}`} style={{color:"#22c55e"}}>+{v}</span>)}
-          <span style={{color:"#fff",fontSize:22,marginLeft:4}}>
-            = <span style={{color:"#f97316",animation:isShaking?"none":"slideUp 0.3s ease"}}>{totalVis}</span>
+          <span style={{color:"#fff",fontSize:20,marginLeft:4}}>
+            = <span style={{color:"#f97316"}}>{myScore}</span>
           </span>
         </div>
+        {ronda===1&&<div style={{fontSize:11,color:"#555",textAlign:"center",marginTop:4}}>
+          (score provisional — solo con tus dados)
+        </div>}
         {config?.showEV&&<div style={{marginTop:10}}><EVBar value={ev} label="Ventaja esperada (EV)" color={myColor}/></div>}
       </Card>
 
       {/* Dados públicos */}
       <Card accent="#22c55e" style={{marginBottom:10}}>
-        <div style={{fontSize:11,color:"#555",marginBottom:8}}>DADOS PÚBLICOS</div>
+        <div style={{fontSize:11,color:"#555",marginBottom:8}}>DADOS PÚBLICOS (compartidos)</div>
         <div style={{display:"flex",gap:10,justifyContent:"center"}}>
-          {pubDice.map((d,i)=>(
-            <Die key={i} value={d.value} hidden={!d.visible} size={52}
-              color="#22c55e" shake={isShaking&&d.visible} glow={d.visible}/>
+          {pubVisible.map((v,i)=>(
+            <Die key={i} value={v} size={52} color="#22c55e" shake={isShaking} glow
+              selected={myBest3.includes(v)}/>
+          ))}
+          {pubHidden.map((_,i)=>(
+            <Die key={`h${i}`} value={0} hidden size={52}/>
           ))}
         </div>
+        {pubVisible.length>0&&(
+          <div style={{fontSize:11,color:"#555",textAlign:"center",marginTop:6}}>
+            Los dados con ✓ forman parte de tu top 3
+          </div>
+        )}
       </Card>
 
       {/* Rival */}
@@ -1269,11 +1417,11 @@ function PlayerScreen({ roomCode, playerId, profile }) {
             <span style={{color:rivalInfo.color,fontWeight:700}}>{rivalInfo.nickname}</span>
             {rivalInfo.isBot&&<Badge color="#22c55e">BOT</Badge>}
           </>}
-          {rivDecidio&&<Badge color="#22c55e">✓ Decidió</Badge>}
+          {rivDecidio&&!yaDecidio&&<Badge color="#22c55e">✓ Ya decidió</Badge>}
         </div>
         <div style={{display:"flex",gap:10,justifyContent:"center"}}>
           <Die value={rivalDice[0]} hidden={!canCheat} size={50} color="#eab308" glow={canCheat}/>
-          <Die value={rivalDice[1]} hidden={true} size={50}/>
+          <Die value={rivalDice[1]} hidden size={50}/>
         </div>
       </Card>
 
@@ -1284,9 +1432,7 @@ function PlayerScreen({ roomCode, playerId, profile }) {
       {ronda<=3&&(
         yaDecidio
           ? <Card style={{textAlign:"center",padding:20,background:"#0f0f1a",border:"1px solid #1e1e2e"}}>
-              <div style={{color:"#444",fontSize:14,animation:"pulse 1.5s infinite"}}>
-                ⏳ Esperando al otro jugador…
-              </div>
+              <div style={{color:"#444",fontSize:14,animation:"pulse 1.5s infinite"}}>⏳ Esperando al otro jugador…</div>
             </Card>
           : <div style={{display:"flex",gap:10,marginTop:4}}>
               <Btn onClick={()=>decidir("apostar")} variant="success"
@@ -1302,7 +1448,7 @@ function PlayerScreen({ roomCode, playerId, profile }) {
 
       {ronda>=4&&!resultado&&(
         <Card style={{textAlign:"center",padding:20}}>
-          <div style={{color:"#555",fontSize:14,animation:"pulse 1.5s infinite"}}>⏳ Calculando…</div>
+          <div style={{color:"#555",fontSize:14,animation:"pulse 1.5s infinite"}}>⏳ Calculando resultado…</div>
         </Card>
       )}
     </div>
@@ -1347,8 +1493,7 @@ function JoinFlow({ roomCode, onBack }) {
   if (step==="role") return (
     <div style={{maxWidth:420,margin:"0 auto",padding:"40px 20px"}}>
       <GlobalCSS/>
-      <button onClick={onBack} style={{background:"none",border:"none",color:"#555",
-        cursor:"pointer",marginBottom:20,fontSize:14}}>← Volver</button>
+      <button onClick={onBack} style={{background:"none",border:"none",color:"#555",cursor:"pointer",marginBottom:20,fontSize:14}}>← Volver</button>
       <div style={{textAlign:"center",marginBottom:24}}>
         <div style={{fontSize:11,color:"#555",fontFamily:"monospace"}}>SALA</div>
         <div style={{fontSize:28,fontWeight:900,color:"#f97316",fontFamily:"monospace",letterSpacing:4}}>{roomCode}</div>
@@ -1356,8 +1501,8 @@ function JoinFlow({ roomCode, onBack }) {
       <h2 style={{color:"#fff",marginBottom:16}}>¿Quién eres?</h2>
       <div style={{display:"flex",flexDirection:"column",gap:10}}>
         {[
-          {r:"jugador", label:"Jugador",              color:"#f97316",emoji:"🎲",desc:"Participante del experimento"},
-          {r:"gestor",  label:"Gestor / Investigador", color:"#a855f7",emoji:"🔬",desc:"Control de la sala"},
+          {r:"jugador",label:"Jugador",color:"#f97316",emoji:"🎲",desc:"Participante del experimento"},
+          {r:"gestor", label:"Gestor / Investigador",color:"#a855f7",emoji:"🔬",desc:"Control de la sala"},
         ].map(({r,label,color,emoji,desc})=>(
           <button key={r} onClick={()=>{ setRole(r); setStep(r==="gestor"?"pw":"profile_jugador"); }}
             style={{background:"#12121e",border:`1px solid ${color}33`,borderRadius:12,
