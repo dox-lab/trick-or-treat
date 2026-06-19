@@ -1,11 +1,8 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { initializeApp } from "firebase/app";
-import {
-  getDatabase, ref, set, get, onValue, off, update, push,
-} from "firebase/database";
+import { getDatabase, ref, set, get, onValue, off, update, push } from "firebase/database";
 
 // ─── FIREBASE CONFIG ─────────────────────────────────────────────────────────
-// IMPORTANTE: reemplaza con tu config real de Firebase
 const firebaseConfig = {
   apiKey: "AIzaSyCV9vwFJeHfQNPimaNVsqbApokGq_VlPU0",
   authDomain: "trick-or-treat-mci8104.firebaseapp.com",
@@ -21,14 +18,37 @@ const db  = getDatabase(app);
 
 // ─── CONSTANTES ──────────────────────────────────────────────────────────────
 const AVATARS = ["🦇","🐺","🕷️","🦉","🐈‍⬛","💀","🐸","🦊","🐙","🐝"];
-const COLORS  = ["#f97316","#22c55e","#a855f7","#3b82f6","#ef4444",
-                 "#eab308","#06b6d4","#ec4899","#14b8a6","#f59e0b"];
+const COLORS  = ["#f97316","#22c55e","#a855f7","#3b82f6","#ef4444","#eab308","#06b6d4","#ec4899","#14b8a6","#f59e0b"];
+
+const BOT_STRATEGIES = [
+  { id:"always_bet",    label:"Siempre apostar",           emoji:"💰", desc:"El bot apuesta en cada ronda sin importar nada" },
+  { id:"always_fold",   label:"Siempre retirarse",          emoji:"🏳️", desc:"El bot se retira en la primera oportunidad" },
+  { id:"ev_threshold",  label:"Umbral de EV (>50%)",       emoji:"🧮", desc:"Apuesta si su EV supera el 50%, si no se retira" },
+  { id:"random",        label:"Aleatorio (50/50)",          emoji:"🎲", desc:"Decide al azar en cada ronda" },
+  { id:"aggressive",    label:"Agresivo (EV>30%)",         emoji:"🔥", desc:"Apuesta con EV>30%, muy difícil de rendir" },
+  { id:"conservative",  label:"Conservador (EV>70%)",      emoji:"🛡️", desc:"Solo apuesta con mano muy fuerte" },
+];
 
 // ─── UTILS ───────────────────────────────────────────────────────────────────
 const roll    = () => Math.floor(Math.random() * 6) + 1;
 const genCode = () => Math.random().toString(36).substring(2,7).toUpperCase();
-const genUID  = () => Math.random().toString(36).substring(2,10);
+const genUID  = () => "u_" + Math.random().toString(36).substring(2,10);
 const calcEV  = (dice) => dice.length ? dice.reduce((a,b)=>a+b,0)/(6*dice.length) : 0;
+const sleep   = (ms) => new Promise(r => setTimeout(r, ms));
+
+// Decisión del bot según estrategia
+function botDecision(strategy, myDice, pubVisibles) {
+  const ev = calcEV([...myDice, ...pubVisibles]);
+  switch(strategy) {
+    case "always_bet":    return "apostar";
+    case "always_fold":   return "retirarse";
+    case "ev_threshold":  return ev >= 0.5  ? "apostar" : "retirarse";
+    case "aggressive":    return ev >= 0.3  ? "apostar" : "retirarse";
+    case "conservative":  return ev >= 0.7  ? "apostar" : "retirarse";
+    case "random":        return Math.random() > 0.5 ? "apostar" : "retirarse";
+    default:              return "apostar";
+  }
+}
 
 // Emparejamiento round-robin sin repetir rival
 function buildSchedule(playerIds, totalPartidas) {
@@ -47,14 +67,10 @@ function buildSchedule(playerIds, totalPartidas) {
     rounds.push(pairs);
     ids.splice(1, 0, ids.pop());
   }
-  // Repetir rondas hasta cubrir totalPartidas
   for (let p = 0; p < totalPartidas; p++) {
     const round = rounds[p % rounds.length];
     round.forEach(([a, b]) => {
-      if (schedule[a] && schedule[b]) {
-        schedule[a].push(b);
-        schedule[b].push(a);
-      }
+      if (schedule[a] && schedule[b]) { schedule[a].push(b); schedule[b].push(a); }
     });
   }
   return schedule;
@@ -65,14 +81,14 @@ function buildFaseSchedule(playerIds, totalPartidas, cfg) {
   const fases = {};
   playerIds.forEach(pid => {
     const pool = [
-      ...Array(cfg.control      || 0).fill("control"),
-      ...Array(cfg.yo_trampo    || 0).fill("yo_trampo"),
-      ...Array(cfg.rival_trampa || 0).fill("rival_trampa"),
-      ...Array(cfg.ambos        || 0).fill("ambos"),
+      ...Array(cfg.control      ||0).fill("control"),
+      ...Array(cfg.yo_trampo    ||0).fill("yo_trampo"),
+      ...Array(cfg.rival_trampa ||0).fill("rival_trampa"),
+      ...Array(cfg.ambos        ||0).fill("ambos"),
     ];
-    for (let i = pool.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i+1));
-      [pool[i], pool[j]] = [pool[j], pool[i]];
+    for (let i = pool.length-1; i>0; i--) {
+      const j = Math.floor(Math.random()*(i+1));
+      [pool[i],pool[j]] = [pool[j],pool[i]];
     }
     fases[pid] = pool.slice(0, totalPartidas);
   });
@@ -81,29 +97,23 @@ function buildFaseSchedule(playerIds, totalPartidas, cfg) {
 
 // ─── DADO SVG ────────────────────────────────────────────────────────────────
 const DOTS = {
-  1:[[50,50]],
-  2:[[28,28],[72,72]],
-  3:[[28,28],[50,50],[72,72]],
-  4:[[28,28],[72,28],[28,72],[72,72]],
-  5:[[28,28],[72,28],[50,50],[28,72],[72,72]],
+  1:[[50,50]], 2:[[28,28],[72,72]], 3:[[28,28],[50,50],[72,72]],
+  4:[[28,28],[72,28],[28,72],[72,72]], 5:[[28,28],[72,28],[50,50],[28,72],[72,72]],
   6:[[28,22],[72,22],[28,50],[72,50],[28,78],[72,78]],
 };
 
-function Die({ value, hidden=false, size=60, color="#f97316", shake=false }) {
+function Die({ value, hidden=false, size=60, color="#f97316", shake=false, glow=false }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 100 100"
-      style={{
-        borderRadius:14, background:hidden?"#1e1e2e":"#0f0f1a",
-        border:`2px solid ${hidden?"#2a2a3a":color}`,
-        boxShadow:hidden?"none":`0 0 14px ${color}55`,
-        flexShrink:0, transition:"border-color 0.3s, box-shadow 0.3s",
-        animation: shake ? "shakeDie 0.5s ease" : "none",
-      }}>
+    <svg width={size} height={size} viewBox="0 0 100 100" style={{
+      borderRadius:14, background:hidden?"#1a1a2a":"#0f0f1a",
+      border:`2px solid ${(glow||!hidden)?color:"#2a2a3a"}`,
+      boxShadow:(glow||!hidden)?`0 0 16px ${color}44`:"none",
+      flexShrink:0, transition:"all 0.3s",
+      animation:shake?"shakeDie 0.5s ease":"none",
+    }}>
       {hidden
-        ? <text x="50" y="65" textAnchor="middle" fontSize="42" fill="#333">?</text>
-        : (DOTS[value]||[]).map(([cx,cy],i) =>
-            <circle key={i} cx={cx} cy={cy} r={9} fill={color}/>
-          )
+        ? <text x="50" y="65" textAnchor="middle" fontSize="40" fill="#333">?</text>
+        : (DOTS[value]||[]).map(([cx,cy],i)=><circle key={i} cx={cx} cy={cy} r={9} fill={color}/>)
       }
     </svg>
   );
@@ -112,41 +122,43 @@ function Die({ value, hidden=false, size=60, color="#f97316", shake=false }) {
 function DiceRow({ dice, hidden=false, size=56, color="#f97316", shake=false }) {
   return (
     <div style={{display:"flex",gap:10,flexWrap:"wrap",justifyContent:"center"}}>
-      {(dice||[]).map((v,i) =>
-        <Die key={i} value={v} hidden={hidden} size={size} color={color} shake={shake}/>
-      )}
+      {(dice||[]).map((v,i)=><Die key={i} value={v} hidden={hidden} size={size} color={color} shake={shake}/>)}
     </div>
   );
 }
 
 // ─── COMPONENTES UI ──────────────────────────────────────────────────────────
+const GlobalCSS = () => (
+  <style>{`
+    @keyframes float    { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-10px)} }
+    @keyframes fadeIn   { from{opacity:0;transform:scale(0.93)} to{opacity:1;transform:scale(1)} }
+    @keyframes shakeDie { 0%,100%{transform:rotate(0)} 25%{transform:rotate(-12deg)} 75%{transform:rotate(12deg)} }
+    @keyframes pulse    { 0%,100%{opacity:1} 50%{opacity:0.35} }
+    @keyframes spin     { from{transform:rotate(0)} to{transform:rotate(360deg)} }
+    @keyframes slideUp  { from{opacity:0;transform:translateY(18px)} to{opacity:1;transform:translateY(0)} }
+    @keyframes popIn    { 0%{transform:scale(0.5);opacity:0} 80%{transform:scale(1.1)} 100%{transform:scale(1);opacity:1} }
+    * { box-sizing:border-box; }
+  `}</style>
+);
+
 function Card({ children, style={}, accent="#f97316" }) {
-  return (
-    <div style={{
-      background:"#12121e", border:`1px solid ${accent}44`,
-      borderRadius:16, padding:"16px 20px",
-      boxShadow:`0 0 24px ${accent}0d`, ...style,
-    }}>{children}</div>
-  );
+  return <div style={{background:"#12121e",border:`1px solid ${accent}44`,borderRadius:16,
+    padding:"16px 20px",boxShadow:`0 0 24px ${accent}0d`,...style}}>{children}</div>;
 }
 
 function Btn({ children, onClick, variant="primary", disabled=false, style={} }) {
   const V = {
-    primary:{ bg:"#f97316", color:"#000", border:"none" },
-    success:{ bg:"#22c55e", color:"#000", border:"none" },
-    danger: { bg:"#ef4444", color:"#fff", border:"none" },
-    ghost:  { bg:"transparent", color:"#f97316", border:"1px solid #f97316" },
-    purple: { bg:"#a855f7", color:"#fff", border:"none" },
-    dark:   { bg:"#1e1e2e", color:"#aaa", border:"1px solid #2a2a3a" },
+    primary:{ bg:"#f97316",color:"#000" }, success:{ bg:"#22c55e",color:"#000" },
+    danger: { bg:"#ef4444",color:"#fff" }, ghost:{ bg:"transparent",color:"#f97316",border:"1px solid #f97316" },
+    purple: { bg:"#a855f7",color:"#fff" }, dark:{ bg:"#1e1e2e",color:"#aaa",border:"1px solid #2a2a3a" },
   };
   const v = V[variant]||V.primary;
   return (
     <button onClick={onClick} disabled={disabled} style={{
       background:disabled?"#1e1e2e":v.bg, color:disabled?"#444":v.color,
       border:disabled?"1px solid #2a2a3a":v.border||"none",
-      borderRadius:10, padding:"10px 20px",
-      fontWeight:700, fontSize:14, cursor:disabled?"not-allowed":"pointer",
-      transition:"all 0.15s", fontFamily:"inherit", ...style,
+      borderRadius:10, padding:"10px 20px", fontWeight:700, fontSize:14,
+      cursor:disabled?"not-allowed":"pointer", transition:"all 0.15s", fontFamily:"inherit", ...style,
     }}>{children}</button>
   );
 }
@@ -166,41 +178,20 @@ function EVBar({ value, label, color="#f97316" }) {
 }
 
 function Badge({ children, color="#f97316" }) {
-  return (
-    <span style={{
-      display:"inline-block",padding:"3px 10px",borderRadius:20,
-      background:`${color}22`,color,fontSize:12,fontWeight:700,
-    }}>{children}</span>
-  );
+  return <span style={{display:"inline-block",padding:"3px 10px",borderRadius:20,
+    background:`${color}22`,color,fontSize:12,fontWeight:700}}>{children}</span>;
 }
 
-// Overlay de animación
 function Overlay({ show, children }) {
   if (!show) return null;
   return (
-    <div style={{
-      position:"fixed",inset:0,background:"#0a0a0fdd",
-      display:"flex",alignItems:"center",justifyContent:"center",
-      zIndex:200,backdropFilter:"blur(6px)",
-      animation:"fadeIn 0.2s ease",
-    }}>{children}</div>
+    <div style={{position:"fixed",inset:0,background:"#0a0a0fee",display:"flex",
+      alignItems:"center",justifyContent:"center",zIndex:200,backdropFilter:"blur(8px)",
+      animation:"fadeIn 0.2s ease"}}>{children}</div>
   );
 }
 
-// ─── CSS GLOBAL ──────────────────────────────────────────────────────────────
-const GlobalCSS = () => (
-  <style>{`
-    @keyframes float    { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-10px)} }
-    @keyframes fadeIn   { from{opacity:0;transform:scale(0.94)} to{opacity:1;transform:scale(1)} }
-    @keyframes shakeDie { 0%,100%{transform:rotate(0)} 25%{transform:rotate(-10deg)} 75%{transform:rotate(10deg)} }
-    @keyframes pulse    { 0%,100%{opacity:1} 50%{opacity:0.4} }
-    @keyframes spin     { from{transform:rotate(0)} to{transform:rotate(360deg)} }
-    @keyframes slideUp  { from{opacity:0;transform:translateY(16px)} to{opacity:1;transform:translateY(0)} }
-    * { box-sizing:border-box; }
-  `}</style>
-);
-
-// ─── PANTALLA INICIO ─────────────────────────────────────────────────────────
+// ─── HOME ─────────────────────────────────────────────────────────────────────
 function HomeScreen({ onGestor, onJoin }) {
   const [code, setCode] = useState("");
   return (
@@ -208,26 +199,17 @@ function HomeScreen({ onGestor, onJoin }) {
       <GlobalCSS/>
       <div style={{textAlign:"center",marginBottom:40}}>
         <div style={{fontSize:72,display:"inline-block",animation:"float 3s ease-in-out infinite"}}>🎃</div>
-        <h1 style={{fontSize:34,fontWeight:900,color:"#f97316",margin:"8px 0 0",letterSpacing:-1}}>
-          TRICK OR TREAT
-        </h1>
-        <p style={{color:"#555",marginTop:6,fontSize:13,letterSpacing:1}}>
-          EXPERIMENTO · TEORÍA DE JUEGOS · UTEC
-        </p>
+        <h1 style={{fontSize:34,fontWeight:900,color:"#f97316",margin:"8px 0 0",letterSpacing:-1}}>TRICK OR TREAT</h1>
+        <p style={{color:"#555",marginTop:6,fontSize:13,letterSpacing:1}}>EXPERIMENTO · TEORÍA DE JUEGOS · UTEC</p>
       </div>
-
       <Card accent="#a855f7" style={{marginBottom:12}}>
         <p style={{color:"#777",margin:"0 0 12px",fontSize:13}}>¿Eres el investigador?</p>
-        <Btn onClick={onGestor} variant="purple" style={{width:"100%"}}>
-          🔬 Crear sala como Gestor
-        </Btn>
+        <Btn onClick={onGestor} variant="purple" style={{width:"100%"}}>🔬 Crear sala como Gestor</Btn>
       </Card>
-
       <Card accent="#f97316">
         <p style={{color:"#777",margin:"0 0 12px",fontSize:13}}>¿Eres jugador? Ingresa el código de sala:</p>
         <div style={{display:"flex",gap:8}}>
-          <input value={code} onChange={e=>setCode(e.target.value.toUpperCase())}
-            placeholder="XXXXX" maxLength={5}
+          <input value={code} onChange={e=>setCode(e.target.value.toUpperCase())} placeholder="XXXXX" maxLength={5}
             style={{flex:1,background:"#0a0a0f",border:"1px solid #2a2a3a",borderRadius:10,
               padding:"11px 14px",color:"#f97316",fontFamily:"monospace",fontSize:22,
               letterSpacing:6,outline:"none",textAlign:"center"}}/>
@@ -238,24 +220,38 @@ function HomeScreen({ onGestor, onJoin }) {
   );
 }
 
-// ─── PANTALLA CREAR SALA ─────────────────────────────────────────────────────
+// ─── CREAR SALA ───────────────────────────────────────────────────────────────
 function CreateRoomScreen({ onCreated }) {
-  const [pw, setPw]                   = useState("");
-  const [totalPartidas, setTotal]     = useState(5);
-  const [cfg, setCfg]                 = useState({control:1,yo_trampo:2,rival_trampa:1,ambos:1});
-  const [loading, setLoading]         = useState(false);
+  const [pw, setPw]           = useState("");
+  const [total, setTotal]     = useState(5);
+  const [cfg, setCfg]         = useState({control:1,yo_trampo:2,rival_trampa:1,ambos:1});
+  const [botCount, setBotCount] = useState(0);
+  const [botStrategy, setBotStrategy] = useState("ev_threshold");
+  const [loading, setLoading] = useState(false);
   const suma = Object.values(cfg).reduce((a,b)=>a+b,0);
   const upd  = (k,v) => setCfg(c=>({...c,[k]:Math.max(0,v)}));
 
   const create = async () => {
-    if (!pw || suma!==totalPartidas) return;
+    if (!pw || suma!==total) return;
     setLoading(true);
     const code = genCode();
+    // Crear bots como jugadores predefinidos
+    const botPlayers = {};
+    const botIds = [];
+    for (let i=0; i<botCount; i++) {
+      const bid = `bot_${i}`;
+      botIds.push(bid);
+      botPlayers[bid] = {
+        uid:bid, nickname:`Bot ${i+1}`, avatar:"🤖",
+        color:COLORS[(i+4)%COLORS.length], isBot:true, strategy:botStrategy,
+      };
+    }
     await set(ref(db,`rooms/${code}`), {
       code, password:pw,
-      config:{ totalPartidas, faseConfig:cfg, showEV:false, timerSecs:0, open:false },
+      config:{ totalPartidas:total, faseConfig:cfg, showEV:false, timerSecs:0, open:false,
+               botCount, botStrategy },
       status:{ phase:"lobby", partidaActual:0 },
-      players:{}, pairs:{}, faseSchedule:{}, balance:{}, logs:{},
+      players:botPlayers, pairs:{}, faseSchedule:{}, balance:{}, logs:{},
       createdAt:Date.now(),
     });
     setLoading(false);
@@ -263,62 +259,84 @@ function CreateRoomScreen({ onCreated }) {
   };
 
   return (
-    <div style={{maxWidth:460,margin:"0 auto",padding:"36px 20px"}}>
+    <div style={{maxWidth:480,margin:"0 auto",padding:"32px 20px"}}>
       <GlobalCSS/>
       <h2 style={{color:"#a855f7",marginBottom:20}}>🔬 Nueva Sala Experimental</h2>
-      <Card accent="#a855f7">
+      <Card accent="#a855f7" style={{marginBottom:12}}>
         <label style={{color:"#777",fontSize:13,display:"block",marginBottom:6}}>Contraseña del gestor</label>
-        <input type="password" value={pw} onChange={e=>setPw(e.target.value)}
-          placeholder="Solo el gestor la sabe"
+        <input type="password" value={pw} onChange={e=>setPw(e.target.value)} placeholder="Solo el gestor la sabe"
           style={{width:"100%",background:"#0a0a0f",border:"1px solid #2a2a3a",borderRadius:10,
             padding:"10px 14px",color:"#fff",fontFamily:"inherit",fontSize:15,
             marginBottom:20,boxSizing:"border-box",outline:"none"}}/>
 
         <label style={{color:"#777",fontSize:13,display:"block",marginBottom:6}}>
-          Total de partidas por jugador: <span style={{color:"#f97316"}}>{totalPartidas}</span>
+          Total de partidas por jugador: <span style={{color:"#f97316"}}>{total}</span>
         </label>
-        <input type="range" min={2} max={10} value={totalPartidas}
-          onChange={e=>{ const v=+e.target.value; setTotal(v); setCfg({control:Math.floor(v/4)||1,yo_trampo:Math.floor(v/4)||1,rival_trampa:Math.floor(v/4)||1,ambos:v-3*(Math.floor(v/4)||1)}); }}
+        <input type="range" min={2} max={10} value={total}
+          onChange={e=>{ const v=+e.target.value; setTotal(v);
+            const q=Math.floor(v/4)||1; setCfg({control:q,yo_trampo:q,rival_trampa:q,ambos:v-3*q}); }}
           style={{width:"100%",marginBottom:20,accentColor:"#f97316"}}/>
 
         <div style={{fontSize:13,color:"#777",marginBottom:10}}>
-          Distribución de fases{" "}
-          <span style={{color:suma===totalPartidas?"#22c55e":"#ef4444",fontWeight:700}}>
-            ({suma}/{totalPartidas})
-          </span>
+          Fases experimentales <span style={{color:suma===total?"#22c55e":"#ef4444",fontWeight:700}}>({suma}/{total})</span>
         </div>
         {[
-          {k:"control",      label:"🎯 Control (sin trampa)",      color:"#aaa"},
-          {k:"yo_trampo",    label:"🃏 Yo veo un dado del rival",   color:"#eab308"},
-          {k:"rival_trampa", label:"👁️ Rival ve uno de mis dados", color:"#ef4444"},
-          {k:"ambos",        label:"⚔️ Ambos ven un dado rival",    color:"#a855f7"},
+          {k:"control",      label:"🎯 Control",            color:"#aaa"},
+          {k:"yo_trampo",    label:"🃏 Yo veo dado rival",   color:"#eab308"},
+          {k:"rival_trampa", label:"👁️ Rival ve mi dado",   color:"#ef4444"},
+          {k:"ambos",        label:"⚔️ Ambos con trampa",    color:"#a855f7"},
         ].map(({k,label,color})=>(
-          <div key={k} style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+          <div key={k} style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
             <span style={{flex:1,fontSize:13,color}}>{label}</span>
             <button onClick={()=>upd(k,cfg[k]-1)} style={{background:"#1e1e2e",border:"1px solid #2a2a3a",
-              borderRadius:6,color:"#aaa",width:28,height:28,cursor:"pointer",fontSize:16,lineHeight:1}}>−</button>
+              borderRadius:6,color:"#aaa",width:28,height:28,cursor:"pointer",fontSize:16}}>−</button>
             <span style={{color:"#fff",fontWeight:700,minWidth:24,textAlign:"center"}}>{cfg[k]}</span>
             <button onClick={()=>upd(k,cfg[k]+1)} style={{background:"#1e1e2e",border:"1px solid #2a2a3a",
-              borderRadius:6,color:"#aaa",width:28,height:28,cursor:"pointer",fontSize:16,lineHeight:1}}>+</button>
+              borderRadius:6,color:"#aaa",width:28,height:28,cursor:"pointer",fontSize:16}}>+</button>
           </div>
         ))}
+        {suma!==total&&<p style={{color:"#ef4444",fontSize:12,marginTop:4,textAlign:"center"}}>La suma debe ser {total}</p>}
+      </Card>
 
-        <Btn onClick={create} disabled={!pw||loading||suma!==totalPartidas} variant="purple"
-          style={{width:"100%",marginTop:12}}>
-          {loading?"Creando...":"Crear sala 🎃"}
-        </Btn>
-        {suma!==totalPartidas && (
-          <p style={{color:"#ef4444",fontSize:12,marginTop:8,textAlign:"center"}}>
-            La suma de fases debe ser {totalPartidas}
-          </p>
+      {/* BOTS */}
+      <Card accent="#22c55e" style={{marginBottom:12}}>
+        <div style={{fontSize:13,color:"#22c55e",fontWeight:700,marginBottom:12}}>🤖 Configuración de Bots</div>
+        <label style={{color:"#777",fontSize:13,display:"block",marginBottom:6}}>
+          Número de bots: <span style={{color:"#22c55e"}}>{botCount}</span>
+        </label>
+        <input type="range" min={0} max={6} value={botCount} onChange={e=>setBotCount(+e.target.value)}
+          style={{width:"100%",marginBottom:16,accentColor:"#22c55e"}}/>
+        {botCount>0 && (
+          <>
+            <label style={{color:"#777",fontSize:13,display:"block",marginBottom:8}}>Estrategia de todos los bots:</label>
+            <div style={{display:"flex",flexDirection:"column",gap:6}}>
+              {BOT_STRATEGIES.map(s=>(
+                <button key={s.id} onClick={()=>setBotStrategy(s.id)} style={{
+                  background:botStrategy===s.id?"#22c55e22":"#1e1e2e",
+                  border:`1px solid ${botStrategy===s.id?"#22c55e":"#2a2a3a"}`,
+                  borderRadius:10,padding:"9px 14px",cursor:"pointer",textAlign:"left",
+                  display:"flex",alignItems:"center",gap:10,
+                }}>
+                  <span style={{fontSize:18}}>{s.emoji}</span>
+                  <div>
+                    <div style={{color:botStrategy===s.id?"#22c55e":"#aaa",fontWeight:700,fontSize:13}}>{s.label}</div>
+                    <div style={{color:"#555",fontSize:11}}>{s.desc}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </>
         )}
       </Card>
+
+      <Btn onClick={create} disabled={!pw||loading||suma!==total} variant="purple" style={{width:"100%"}}>
+        {loading?"Creando...":"Crear sala 🎃"}
+      </Btn>
     </div>
   );
 }
 
-// ─── PANTALLA PERFIL ─────────────────────────────────────────────────────────
-// Cada jugador genera un UID único al entrar. Ese UID es su clave en /players
+// ─── PERFIL JUGADOR ───────────────────────────────────────────────────────────
 function ProfileScreen({ roomCode, onJoined }) {
   const [nickname, setNickname] = useState("");
   const [avatar,   setAvatar]   = useState(AVATARS[0]);
@@ -331,14 +349,10 @@ function ProfileScreen({ roomCode, onJoined }) {
     setLoading(true);
     const snap = await get(ref(db,`rooms/${roomCode}`));
     if (!snap.exists()) { setError("Sala no encontrada"); setLoading(false); return; }
-    const room = snap.val();
-    if (!room.config?.open) { setError("La sala aún no está abierta. Espera al gestor."); setLoading(false); return; }
-
-    // Generar UID único para este jugador
+    if (!snap.val().config?.open) { setError("La sala aún no está abierta."); setLoading(false); return; }
     const uid = genUID();
-    const profile = { uid, nickname:nickname.trim(), avatar, color, joinedAt:Date.now(), balance:10 };
+    const profile = { uid, nickname:nickname.trim(), avatar, color, isBot:false, joinedAt:Date.now() };
     await set(ref(db,`rooms/${roomCode}/players/${uid}`), profile);
-    // Guardar uid en sessionStorage para recuperarlo si refresca
     sessionStorage.setItem(`tot_uid_${roomCode}`, uid);
     setLoading(false);
     onJoined(uid, profile);
@@ -350,43 +364,34 @@ function ProfileScreen({ roomCode, onJoined }) {
       <div style={{textAlign:"center",marginBottom:20}}>
         <div style={{fontSize:11,color:"#555",fontFamily:"monospace"}}>SALA</div>
         <div style={{fontSize:26,fontWeight:900,color:"#f97316",fontFamily:"monospace",letterSpacing:4}}>{roomCode}</div>
-        <p style={{color:"#555",fontSize:13,marginTop:4}}>Crea tu perfil para unirte</p>
       </div>
       <Card>
         <div style={{textAlign:"center",marginBottom:20}}>
           <div style={{fontSize:80,filter:`drop-shadow(0 0 18px ${color})`,lineHeight:1}}>{avatar}</div>
           <div style={{fontWeight:700,color,fontSize:20,marginTop:8}}>{nickname||"Tu nombre aquí"}</div>
         </div>
-
         <label style={{color:"#777",fontSize:13,display:"block",marginBottom:6}}>Nickname</label>
-        <input value={nickname} onChange={e=>setNickname(e.target.value)}
-          placeholder="Ej: StatsWitch" maxLength={16}
+        <input value={nickname} onChange={e=>setNickname(e.target.value)} placeholder="Ej: StatsWitch" maxLength={16}
           style={{width:"100%",background:"#0a0a0f",border:"1px solid #2a2a3a",borderRadius:10,
             padding:"10px 14px",color:"#fff",fontFamily:"inherit",fontSize:15,
             marginBottom:16,boxSizing:"border-box",outline:"none"}}/>
-
         <label style={{color:"#777",fontSize:13,display:"block",marginBottom:8}}>Avatar</label>
         <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:16}}>
           {AVATARS.map(a=>(
-            <button key={a} onClick={()=>setAvatar(a)} style={{
-              fontSize:26,background:avatar===a?"#1e1e2e":"transparent",
+            <button key={a} onClick={()=>setAvatar(a)} style={{fontSize:26,
+              background:avatar===a?"#1e1e2e":"transparent",
               border:`2px solid ${avatar===a?color:"#2a2a3a"}`,
-              borderRadius:10,padding:5,cursor:"pointer",transition:"all 0.15s",
-            }}>{a}</button>
+              borderRadius:10,padding:5,cursor:"pointer",transition:"all 0.15s"}}>{a}</button>
           ))}
         </div>
-
         <label style={{color:"#777",fontSize:13,display:"block",marginBottom:8}}>Color</label>
         <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:20}}>
           {COLORS.map(c=>(
-            <button key={c} onClick={()=>setColor(c)} style={{
-              width:30,height:30,background:c,borderRadius:"50%",
-              border:`3px solid ${color===c?"#fff":"transparent"}`,cursor:"pointer",
-            }}/>
+            <button key={c} onClick={()=>setColor(c)} style={{width:30,height:30,background:c,borderRadius:"50%",
+              border:`3px solid ${color===c?"#fff":"transparent"}`,cursor:"pointer"}}/>
           ))}
         </div>
-
-        {error && <p style={{color:"#ef4444",fontSize:13,marginBottom:12}}>{error}</p>}
+        {error&&<p style={{color:"#ef4444",fontSize:13,marginBottom:12}}>{error}</p>}
         <Btn onClick={join} disabled={!nickname.trim()||loading} style={{width:"100%"}}>
           {loading?"Entrando...":"Entrar al juego 🎃"}
         </Btn>
@@ -395,24 +400,266 @@ function ProfileScreen({ roomCode, onJoined }) {
   );
 }
 
-// ─── PANTALLA GESTOR ─────────────────────────────────────────────────────────
+// ─── PERFIL GESTOR ────────────────────────────────────────────────────────────
+function GestorProfileScreen({ roomCode, onJoined }) {
+  const [gNick, setGNick] = useState("");
+  const [gCol,  setGCol]  = useState("#a855f7");
+  const [gLoad, setGLoad] = useState(false);
+
+  const joinGestor = async () => {
+    if (!gNick.trim()) return;
+    setGLoad(true);
+    const prof = { uid:"gestor", nickname:gNick.trim(), avatar:"🔬", color:gCol, role:"gestor", isBot:false };
+    await set(ref(db,`rooms/${roomCode}/players/gestor`), prof);
+    setGLoad(false);
+    onJoined(prof);
+  };
+
+  return (
+    <div style={{maxWidth:420,margin:"0 auto",padding:"32px 20px"}}>
+      <GlobalCSS/>
+      <div style={{textAlign:"center",marginBottom:16}}>
+        <div style={{fontSize:11,color:"#555",fontFamily:"monospace"}}>SALA</div>
+        <div style={{fontSize:26,fontWeight:900,color:"#a855f7",fontFamily:"monospace",letterSpacing:4}}>{roomCode}</div>
+      </div>
+      <Card accent="#a855f7">
+        <div style={{textAlign:"center",marginBottom:16}}>
+          <div style={{fontSize:64,filter:`drop-shadow(0 0 14px ${gCol})`}}>🔬</div>
+          <div style={{color:gCol,fontWeight:700,fontSize:18,marginTop:4}}>{gNick||"Gestor"}</div>
+        </div>
+        <label style={{color:"#777",fontSize:13,display:"block",marginBottom:6}}>Tu nombre</label>
+        <input value={gNick} onChange={e=>setGNick(e.target.value)} placeholder="Dr. Stats"
+          onKeyDown={e=>e.key==="Enter"&&joinGestor()}
+          style={{width:"100%",background:"#0a0a0f",border:"1px solid #2a2a3a",borderRadius:10,
+            padding:"10px 14px",color:"#fff",fontFamily:"inherit",fontSize:15,
+            marginBottom:16,boxSizing:"border-box",outline:"none"}}/>
+        <label style={{color:"#777",fontSize:13,display:"block",marginBottom:8}}>Color</label>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:20}}>
+          {COLORS.map(c=>(
+            <button key={c} onClick={()=>setGCol(c)} style={{width:28,height:28,background:c,
+              borderRadius:"50%",border:`3px solid ${gCol===c?"#fff":"transparent"}`,cursor:"pointer"}}/>
+          ))}
+        </div>
+        <Btn onClick={joinGestor} disabled={!gNick.trim()||gLoad} variant="purple" style={{width:"100%"}}>
+          {gLoad?"Entrando...":"Entrar como Gestor 🔬"}
+        </Btn>
+      </Card>
+    </div>
+  );
+}
+
+// ─── MOTOR DEL JUEGO (funciones puras que usa GestorScreen) ──────────────────
+async function finalizarPartidaDB(roomCode, room, n, pairKey, pd, ganador, motivo) {
+  const [p1,p2] = pd.jugadores||[];
+  const pot = pd.pot||2;
+  let b1=room.balance?.[p1]??10, b2=room.balance?.[p2]??10;
+  let res;
+  if (ganador==="empate") {
+    b1+=Math.floor(pot/2); b2+=Math.floor(pot/2); res="Empate";
+  } else {
+    if (ganador===p1) b1+=pot; else b2+=pot;
+    const nick = room.players?.[ganador]?.nickname||ganador;
+    res = `Ganó ${nick} (${motivo})`;
+  }
+  await update(ref(db,`rooms/${roomCode}`), {
+    [`balance/${p1}`]:b1, [`balance/${p2}`]:b2,
+    [`partidas/${n}/${pairKey}/resultado`]:res,
+    [`partidas/${n}/${pairKey}/ronda`]:4,
+  });
+  const logRef = push(ref(db,`rooms/${roomCode}/logs`));
+  await set(logRef,{
+    partida:n, pairKey, jugador:ganador, rival:"",
+    nickname_jugador:room.players?.[ganador]?.nickname||"",
+    nickname_rival:"",
+    accion:"resultado", ronda:4, ev:0, tiempo_ms:0,
+    fase:pd.fases?.[ganador]||"control",
+    suma_propia:0, suma_publica:0, resultado:res, ts:Date.now(),
+  });
+  return res;
+}
+
+async function resolveRondaDB(roomCode, room, n, pairKey, pd, ronda, pidA, decA, pidB, decB) {
+  if (decA==="retirarse"||decB==="retirarse") {
+    const ganador = decA==="retirarse"?pidB:pidA;
+    await finalizarPartidaDB(roomCode, room, n, pairKey, pd, ganador, "Retirada");
+    return;
+  }
+  const newPot = (pd.pot||2)+2;
+  const balA = room.balance?.[pidA]??10, balB = room.balance?.[pidB]??10;
+  const upds = { [`balance/${pidA}`]:balA-1, [`balance/${pidB}`]:balB-1 };
+
+  if (ronda>=3) {
+    const dA=pd.dados?.[pidA]||[], dB=pd.dados?.[pidB]||[], pub=pd.publicos||[];
+    const sA=dA.reduce((a,b)=>a+b,0)+pub.reduce((a,b)=>a+b,0);
+    const sB=dB.reduce((a,b)=>a+b,0)+pub.reduce((a,b)=>a+b,0);
+    const t3A=[...dA,...pub].filter(v=>v===1).length>=3;
+    const t3B=[...dB,...pub].filter(v=>v===1).length>=3;
+    let ganador;
+    if (t3A&&!t3B) ganador=pidA;
+    else if (t3B&&!t3A) ganador=pidB;
+    else if (sA>sB) ganador=pidA;
+    else if (sB>sA) ganador=pidB;
+    else ganador="empate";
+    upds[`partidas/${n}/${pairKey}/pot`]   = newPot;
+    upds[`partidas/${n}/${pairKey}/ronda`] = 4;
+    await update(ref(db,`rooms/${roomCode}`), upds);
+    await finalizarPartidaDB(roomCode, room, n, pairKey, {...pd,pot:newPot}, ganador, "Suma final");
+  } else {
+    upds[`partidas/${n}/${pairKey}/pot`]        = newPot;
+    upds[`partidas/${n}/${pairKey}/ronda`]      = ronda+1;
+    upds[`partidas/${n}/${pairKey}/startedAt`]  = Date.now();
+    upds[`partidas/${n}/${pairKey}/decisiones`] = null;
+    await update(ref(db,`rooms/${roomCode}`), upds);
+  }
+}
+
+// ─── GESTOR SCREEN ────────────────────────────────────────────────────────────
 function GestorScreen({ roomCode }) {
   const [room,     setRoom]    = useState(null);
   const [tab,      setTab]     = useState("control");
-  const [cfgLocal, setCfgLocal] = useState(null);
+  const [cfgLocal, setCfgLocal]= useState(null);
+  const roomRef_ = useRef(null);
 
   useEffect(()=>{
     const r = ref(db,`rooms/${roomCode}`);
+    roomRef_.current = r;
     onValue(r, snap=>{ if(snap.exists()){ const d=snap.val(); setRoom(d); if(!cfgLocal) setCfgLocal(d.config); }});
     return ()=>off(r);
   },[roomCode]);
 
+  // Auto-avance: cuando todos los pares de la partida actual tienen resultado
+  useEffect(()=>{
+    if (!room) return;
+    const { status, partidas, config } = room;
+    if (status?.phase!=="playing") return;
+    const n = status?.partidaActual||0;
+    const pData = partidas?.[n]||{};
+    const pairs = Object.values(pData);
+    if (!pairs.length) return;
+    const allDone = pairs.every(p=>p.resultado);
+    if (!allDone) return;
+    // Esperar 2s antes de avanzar (para que los jugadores vean el resultado)
+    const timer = setTimeout(async ()=>{
+      const snap = await get(ref(db,`rooms/${roomCode}`));
+      const r = snap.val();
+      const next = (r.status?.partidaActual||1)+1;
+      if (next > r.config.totalPartidas) {
+        await update(ref(db,`rooms/${roomCode}/status`),{phase:"finished"});
+      } else {
+        const players = Object.keys(r.players||{}).filter(k=>k!=="gestor");
+        await launchPartida(next, players, r.pairs, r.faseSchedule, r.config.totalPartidas, r);
+      }
+    }, 2500);
+    return ()=>clearTimeout(timer);
+  },[room?.partidas, room?.status?.partidaActual]);
+
   const openRoom  = ()=>update(ref(db,`rooms/${roomCode}/config`),{open:true});
   const closeRoom = ()=>update(ref(db,`rooms/${roomCode}/config`),{open:false});
 
+  const launchPartida = async (numPartida, players, schedule, faseSchedule, totalPartidas, r) => {
+    const idx = numPartida-1;
+    const done = new Set();
+    const partidaData = {};
+    players.forEach(pid=>{
+      if (done.has(pid)) return;
+      const rival = (schedule[pid]||[])[idx];
+      if (!rival||done.has(rival)) return;
+      done.add(pid); done.add(rival);
+      const pairKey = [pid,rival].sort().join("_");
+      partidaData[pairKey] = {
+        jugadores:[pid,rival],
+        dados:{ [pid]:[roll(),roll()], [rival]:[roll(),roll()] },
+        publicos:[roll(),roll()],
+        fases:{
+          [pid]:(faseSchedule[pid]||[])[idx]||"control",
+          [rival]:(faseSchedule[rival]||[])[idx]||"control",
+        },
+        ronda:1, pot:2, decisiones:{}, resultado:null, startedAt:Date.now(),
+      };
+    });
+    await update(ref(db,`rooms/${roomCode}/partidas/${numPartida}`), partidaData);
+    await update(ref(db,`rooms/${roomCode}/status`),{partidaActual:numPartida, phase:"playing"});
+
+    // Programar decisiones de bots para esta partida
+    Object.entries(partidaData).forEach(([pairKey,pd])=>{
+      scheduleBotDecisions(numPartida, pairKey, pd, r||room);
+    });
+  };
+
+  // Ejecutar decisiones de bots con delay realista
+  const scheduleBotDecisions = async (n, pairKey, pd, r) => {
+    const [pidA, pidB] = pd.jugadores||[];
+    const isA = r?.players?.[pidA]?.isBot;
+    const isB = r?.players?.[pidB]?.isBot;
+    if (!isA && !isB) return;
+
+    for (let ronda=1; ronda<=3; ronda++) {
+      // Esperar a que la ronda esté activa leyendo Firebase
+      await waitForRonda(n, pairKey, ronda);
+      const snap2 = await get(ref(db,`rooms/${roomCode}/partidas/${n}/${pairKey}`));
+      if (!snap2.exists()) return;
+      const pdCurrent = snap2.val();
+      if (pdCurrent.resultado) return;
+
+      const pub = (pdCurrent.publicos||[]).slice(0, ronda-1);
+
+      for (const [pid, isBot] of [[pidA,isA],[pidB,isB]]) {
+        if (!isBot) continue;
+        const strategy = r?.players?.[pid]?.strategy||"ev_threshold";
+        const myDice   = pdCurrent.dados?.[pid]||[];
+        const decision = botDecision(strategy, myDice, pub);
+        const delay    = 800 + Math.random()*1200; // 0.8-2s de "pensamiento"
+        await sleep(delay);
+
+        // Verificar que la partida no terminó mientras esperaba
+        const snap3 = await get(ref(db,`rooms/${roomCode}/partidas/${n}/${pairKey}`));
+        if (!snap3.exists()||snap3.val().resultado) return;
+
+        const decKey = `${ronda}_${pid}`;
+        await update(ref(db,`rooms/${roomCode}/partidas/${n}/${pairKey}/decisiones`),{[decKey]:decision});
+
+        // Log del bot
+        const ev = calcEV([...myDice,...pub]);
+        const logRef = push(ref(db,`rooms/${roomCode}/logs`));
+        const rival = pid===pidA?pidB:pidA;
+        await set(logRef,{
+          partida:n, pairKey, jugador:pid, rival,
+          nickname_jugador:r?.players?.[pid]?.nickname||pid,
+          nickname_rival:r?.players?.[rival]?.nickname||rival,
+          accion:decision, ronda, ev, tiempo_ms:Math.floor(delay),
+          fase:pdCurrent.fases?.[pid]||"control",
+          suma_propia:myDice.reduce((a,b)=>a+b,0),
+          suma_publica:pub.reduce((a,b)=>a+b,0),
+          resultado:null, ts:Date.now(),
+        });
+
+        // Verificar si ambos ya decidieron para resolver
+        const snap4 = await get(ref(db,`rooms/${roomCode}/partidas/${n}/${pairKey}`));
+        if (!snap4.exists()) return;
+        const pd4 = snap4.val();
+        const rivalDec = pd4.decisiones?.[`${ronda}_${rival}`];
+        const myDec    = decision;
+        if (rivalDec && pid < rival) {
+          const r2 = (await get(ref(db,`rooms/${roomCode}`))).val();
+          await resolveRondaDB(roomCode, r2, n, pairKey, pd4, ronda, pid, myDec, rival, rivalDec);
+          if (myDec==="retirarse"||rivalDec==="retirarse") return;
+        }
+      }
+    }
+  };
+
+  const waitForRonda = (n, pairKey, targetRonda) => new Promise(resolve=>{
+    if (targetRonda===1) { resolve(); return; }
+    const r = ref(db,`rooms/${roomCode}/partidas/${n}/${pairKey}/ronda`);
+    const unsub = onValue(r, snap=>{
+      if ((snap.val()||1)>=targetRonda) { off(r); resolve(); }
+    });
+  });
+
   const startExperiment = async () => {
-    const players = Object.keys(room.players||{});
-    if (players.length < 2) { alert("Necesitas al menos 2 jugadores"); return; }
+    // Excluir "gestor" del emparejamiento
+    const players = Object.keys(room.players||{}).filter(k=>k!=="gestor");
+    if (players.length<2) { alert("Necesitas al menos 2 jugadores"); return; }
     const tp = room.config.totalPartidas;
     const schedule      = buildSchedule(players, tp);
     const faseSchedule  = buildFaseSchedule(players, tp, room.config.faseConfig);
@@ -420,54 +667,14 @@ function GestorScreen({ roomCode }) {
     players.forEach(p=>{ balanceInit[p]=10; });
     await update(ref(db,`rooms/${roomCode}`),{
       pairs:schedule, faseSchedule,
-      "status/phase":"playing",
-      "status/partidaActual":1,
+      "status/phase":"playing","status/partidaActual":1,
       balance:balanceInit,
     });
-    await launchPartida(1, players, schedule, faseSchedule, tp);
-  };
-
-  const launchPartida = async (numPartida, players, schedule, faseSchedule, totalPartidas) => {
-    if (numPartida > totalPartidas) {
-      await update(ref(db,`rooms/${roomCode}/status`),{phase:"finished"});
-      return;
-    }
-    const idx = numPartida - 1;
-    const done = new Set();
-    const partidaData = {};
-    players.forEach(pid=>{
-      if (done.has(pid)) return;
-      const rival = (schedule[pid]||[])[idx];
-      if (!rival || done.has(rival)) return;
-      done.add(pid); done.add(rival);
-      const pairKey = [pid,rival].sort().join("_");
-      partidaData[pairKey] = {
-        jugadores:[pid,rival],
-        dados:{ [pid]:[roll(),roll()], [rival]:[roll(),roll()] },
-        publicos:[roll(),roll()],
-        fases:{ [pid]:(faseSchedule[pid]||[])[idx]||"control",
-                [rival]:(faseSchedule[rival]||[])[idx]||"control" },
-        ronda:1, pot:2, decisiones:{}, resultado:null, startedAt:Date.now(),
-      };
-    });
-    await update(ref(db,`rooms/${roomCode}/partidas/${numPartida}`), partidaData);
-    await update(ref(db,`rooms/${roomCode}/status`),{partidaActual:numPartida, phase:"playing"});
-  };
-
-  const nextPartida = async () => {
-    const snap = await get(ref(db,`rooms/${roomCode}`));
-    const r = snap.val();
-    const players = Object.keys(r.players||{});
-    const next = (r.status?.partidaActual||1)+1;
-    if (next > r.config.totalPartidas) {
-      await update(ref(db,`rooms/${roomCode}/status`),{phase:"finished"});
-    } else {
-      await launchPartida(next, players, r.pairs, r.faseSchedule, r.config.totalPartidas);
-    }
+    await launchPartida(1, players, schedule, faseSchedule, tp, room);
   };
 
   const resetSession = async ()=>{
-    const players = Object.keys(room?.players||{});
+    const players = Object.keys(room?.players||{}).filter(k=>k!=="gestor");
     const bal = {}; players.forEach(p=>{bal[p]=10;});
     await update(ref(db,`rooms/${roomCode}`),{
       partidas:null, logs:null, balance:bal, pairs:null, faseSchedule:null,
@@ -490,17 +697,19 @@ function GestorScreen({ roomCode }) {
   if (!room) return <div style={{color:"#666",padding:40,textAlign:"center"}}>Cargando sala…</div>;
 
   const {config,status,players,balance,partidas,logs:logsObj}=room;
-  const logs       = Object.values(logsObj||{}).sort((a,b)=>a.ts-b.ts);
-  const allPlayers = Object.entries(players||{});
-  const phase      = status?.phase||"lobby";
-  const pActual    = status?.partidaActual||0;
-  const pData      = partidas?.[pActual]||{};
-  const TABS       = [{id:"control",label:"🎮 Control"},{id:"partidas",label:"🎲 Partidas"},{id:"datos",label:"📊 Datos"},{id:"config",label:"⚙️ Config"}];
+  const logs        = Object.values(logsObj||{}).sort((a,b)=>a.ts-b.ts);
+  // Excluir gestor de la lista de jugadores visible en panel
+  const allPlayers  = Object.entries(players||{}).filter(([k])=>k!=="gestor");
+  const humanPlayers= allPlayers.filter(([,p])=>!p.isBot);
+  const botPlayers  = allPlayers.filter(([,p])=>p.isBot);
+  const phase       = status?.phase||"lobby";
+  const pActual     = status?.partidaActual||0;
+  const pData       = partidas?.[pActual]||{};
+  const TABS        = [{id:"control",label:"🎮 Control"},{id:"partidas",label:"🎲 Partidas"},{id:"datos",label:"📊 Datos"},{id:"config",label:"⚙️ Config"}];
 
   return (
     <div style={{maxWidth:740,margin:"0 auto",padding:"20px 16px"}}>
       <GlobalCSS/>
-      {/* Header */}
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
         <div>
           <div style={{fontSize:11,color:"#555",fontFamily:"monospace"}}>GESTOR · SALA</div>
@@ -509,102 +718,134 @@ function GestorScreen({ roomCode }) {
         <div style={{display:"flex",gap:6,flexWrap:"wrap",justifyContent:"flex-end"}}>
           <Badge color={config?.open?"#22c55e":"#ef4444"}>{config?.open?"● ABIERTA":"● CERRADA"}</Badge>
           <Badge color={phase==="playing"?"#f97316":phase==="finished"?"#22c55e":"#666"}>
-            {phase==="lobby"?"LOBBY":phase==="playing"?`PARTIDA ${pActual}/${config?.totalPartidas}`:"FINALIZADO"}
+            {phase==="lobby"?"LOBBY":phase==="playing"?`PARTIDA ${pActual}/${config?.totalPartidas}`:"FIN"}
           </Badge>
         </div>
       </div>
 
-      {/* Tabs */}
       <div style={{display:"flex",gap:4,marginBottom:16,background:"#1a1a2a",borderRadius:12,padding:4}}>
         {TABS.map(t=>(
           <button key={t.id} onClick={()=>setTab(t.id)} style={{
             flex:1,padding:"8px 4px",background:tab===t.id?"#a855f7":"transparent",
             border:"none",borderRadius:8,color:tab===t.id?"#fff":"#555",
-            fontWeight:700,fontSize:12,cursor:"pointer",fontFamily:"inherit",
-          }}>{t.label}</button>
+            fontWeight:700,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>
+            {t.label}
+          </button>
         ))}
       </div>
 
-      {/* CONTROL */}
+      {/* ── TAB CONTROL ── */}
       {tab==="control" && (
         <div style={{display:"flex",flexDirection:"column",gap:12}}>
           <Card accent="#a855f7">
             <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
               {!config?.open
-                ? <Btn onClick={openRoom}  variant="success">Abrir sala</Btn>
+                ? <Btn onClick={openRoom} variant="success">Abrir sala</Btn>
                 : <Btn onClick={closeRoom} variant="danger">Cerrar sala</Btn>}
-              {phase==="lobby" && config?.open &&
+              {phase==="lobby"&&config?.open&&
                 <Btn onClick={startExperiment}>▶ Iniciar experimento</Btn>}
-              {phase==="playing" &&
-                <Btn onClick={nextPartida} variant="purple">⏭ Siguiente partida</Btn>}
-              <Btn onClick={resetSession} variant="ghost">↺ Reiniciar</Btn>
+              {phase==="playing"&&
+                <Badge color="#f97316">⚡ Auto-avance activo</Badge>}
+              {phase==="finished"&&
+                <Btn onClick={resetSession} variant="ghost">↺ Nueva sesión</Btn>}
+              {phase!=="finished"&&
+                <Btn onClick={resetSession} variant="ghost">↺ Reiniciar</Btn>}
             </div>
           </Card>
 
-          {/* Jugadores */}
+          {/* Jugadores humanos */}
           <Card>
             <div style={{fontSize:11,color:"#555",marginBottom:10}}>
-              JUGADORES EN SALA ({allPlayers.length})
+              JUGADORES HUMANOS ({humanPlayers.length})
             </div>
             <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
-              {allPlayers.map(([uid,p])=>(
+              {humanPlayers.map(([uid,p])=>(
                 <div key={uid} style={{background:"#1a1a2a",borderRadius:10,padding:"8px 14px",
                   border:`1px solid ${p.color}44`,display:"flex",alignItems:"center",gap:8}}>
                   <span style={{fontSize:22}}>{p.avatar}</span>
                   <div>
-                    <div style={{color:p.color,fontWeight:700,fontSize:14}}>{p.nickname}</div>
+                    <div style={{color:p.color,fontWeight:700,fontSize:13}}>{p.nickname}</div>
                     <div style={{color:"#555",fontSize:11}}>💰 {balance?.[uid]??10}</div>
                   </div>
                 </div>
               ))}
-              {!allPlayers.length && <span style={{color:"#444",fontSize:13}}>Esperando jugadores…</span>}
+              {!humanPlayers.length&&<span style={{color:"#444",fontSize:13}}>Esperando jugadores…</span>}
             </div>
           </Card>
 
-          {/* Estado partidas en curso */}
+          {/* Bots */}
+          {botPlayers.length>0 && (
+            <Card accent="#22c55e">
+              <div style={{fontSize:11,color:"#22c55e",marginBottom:10}}>
+                BOTS ({botPlayers.length}) · Estrategia: {BOT_STRATEGIES.find(s=>s.id===config?.botStrategy)?.label||"?"}
+              </div>
+              <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+                {botPlayers.map(([uid,p])=>(
+                  <div key={uid} style={{background:"#1a1a2a",borderRadius:10,padding:"7px 12px",
+                    border:"1px solid #22c55e33",display:"flex",alignItems:"center",gap:6}}>
+                    <span style={{fontSize:18}}>🤖</span>
+                    <div>
+                      <div style={{color:"#22c55e",fontWeight:700,fontSize:12}}>{p.nickname}</div>
+                      <div style={{color:"#555",fontSize:10}}>💰 {balance?.[uid]??10}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
+
+          {/* Estado pares en juego */}
           {phase==="playing" && Object.entries(pData).map(([pairKey,pd])=>{
-            const [pA,pB] = pd.jugadores||[];
+            const [pA,pB]=pd.jugadores||[];
             const plA=players?.[pA]; const plB=players?.[pB];
+            const allDone = pd.resultado;
             return (
-              <Card key={pairKey} accent="#f97316">
-                <div style={{fontSize:11,color:"#555",marginBottom:8}}>PAR EN JUEGO</div>
+              <Card key={pairKey} accent={allDone?"#22c55e":"#f97316"}>
+                <div style={{fontSize:11,color:"#555",marginBottom:8}}>
+                  PAR {allDone?"✓ TERMINADO":"EN JUEGO"}
+                </div>
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
                   {[[pA,plA],[pB,plB]].map(([pid,pl])=>pl&&(
                     <div key={pid}>
-                      <div style={{color:pl.color,fontWeight:700,fontSize:15}}>{pl.avatar} {pl.nickname}</div>
-                      <div style={{fontSize:12,color:"#555",marginTop:2}}>
-                        Fase: <span style={{color:"#aaa"}}>{pd.fases?.[pid]||"-"}</span>
+                      <div style={{color:pl.color,fontWeight:700}}>
+                        {pl.isBot?"🤖":pl.avatar} {pl.nickname}
+                        {pl.isBot&&<span style={{color:"#555",fontSize:11}}> (bot)</span>}
                       </div>
-                      <div style={{fontSize:12,color:"#555"}}>
-                        Dados: <span style={{color:"#aaa",fontFamily:"monospace"}}>{(pd.dados?.[pid]||[]).join(" | ")}</span>
+                      <div style={{fontSize:11,color:"#555",marginTop:2}}>
+                        Dados: <span style={{color:"#aaa",fontFamily:"monospace"}}>{(pd.dados?.[pid]||[]).join("|")}</span>
+                        {" · "}Fase: <span style={{color:"#aaa"}}>{pd.fases?.[pid]||"-"}</span>
                       </div>
-                      <div style={{fontSize:12,color:"#555"}}>
-                        R{pd.ronda}: <span style={{color:pd.decisiones?.[`${pd.ronda}_${pid}`]?"#22c55e":"#666"}}>
-                          {pd.decisiones?.[`${pd.ronda}_${pid}`]||"⏳ esperando"}
-                        </span>
+                      <div style={{fontSize:11,color:pd.decisiones?.[`${pd.ronda}_${pid}`]?"#22c55e":"#555"}}>
+                        R{pd.ronda}: {pd.decisiones?.[`${pd.ronda}_${pid}`]||"⏳"}
                       </div>
                     </div>
                   ))}
                 </div>
-                <div style={{marginTop:8,fontSize:12,color:"#a855f7"}}>
-                  Públicos: {(pd.publicos||[]).map((v,i)=>i<(pd.ronda||1)-1?v:"?").join(" | ")}
-                  {" · "}Ronda {pd.ronda}/3{" · "}Pozo {pd.pot}
+                <div style={{marginTop:8,fontSize:11,color:"#a855f7"}}>
+                  Públicos: {(pd.publicos||[]).map((v,i)=>i<(pd.ronda||1)-1?v:"?").join("|")}
+                  {" · "}R{pd.ronda}/3{" · "}Pozo {pd.pot}
                 </div>
-                {pd.resultado&&<div style={{marginTop:6,color:"#22c55e",fontWeight:700}}>✓ {pd.resultado}</div>}
+                {pd.resultado&&<div style={{marginTop:6,color:"#22c55e",fontWeight:700,fontSize:13}}>
+                  ✓ {pd.resultado}
+                </div>}
               </Card>
             );
           })}
+
           {phase==="finished"&&(
             <Card style={{textAlign:"center",padding:32}}>
               <div style={{fontSize:48}}>🏆</div>
               <h2 style={{color:"#22c55e",marginTop:8}}>Experimento completado</h2>
-              <p style={{color:"#555",fontSize:13}}>Descarga los datos en la pestaña Datos</p>
+              <div style={{display:"flex",gap:10,justifyContent:"center",flexWrap:"wrap",marginTop:16}}>
+                <Btn onClick={exportCSV} variant="success">⬇ Exportar CSV</Btn>
+                <Btn onClick={resetSession} variant="ghost">↺ Nueva sesión</Btn>
+              </div>
             </Card>
           )}
         </div>
       )}
 
-      {/* PARTIDAS */}
+      {/* ── TAB PARTIDAS ── */}
       {tab==="partidas" && (
         <div style={{display:"flex",flexDirection:"column",gap:10}}>
           {Array.from({length:config?.totalPartidas||5},(_,i)=>i+1).map(n=>{
@@ -632,12 +873,12 @@ function GestorScreen({ roomCode }) {
         </div>
       )}
 
-      {/* DATOS */}
+      {/* ── TAB DATOS ── */}
       {tab==="datos" && (
         <div>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
-            <span style={{color:"#555",fontSize:13}}>{logs.length} eventos</span>
-            <Btn onClick={exportCSV} variant="success" style={{fontSize:13,padding:"7px 16px"}}>⬇ CSV</Btn>
+            <span style={{color:"#555",fontSize:13}}>{logs.length} eventos registrados</span>
+            <Btn onClick={exportCSV} variant="success" style={{fontSize:13,padding:"7px 16px"}}>⬇ Exportar CSV</Btn>
           </div>
           <Card>
             <div style={{overflowX:"auto"}}>
@@ -648,7 +889,7 @@ function GestorScreen({ roomCode }) {
                   ))}</tr>
                 </thead>
                 <tbody>
-                  {logs.slice(-60).reverse().map((l,i)=>(
+                  {logs.slice(-80).reverse().map((l,i)=>(
                     <tr key={i} style={{borderBottom:"1px solid #141420"}}>
                       <td style={{padding:"4px 8px",color:"#555"}}>{l.partida}</td>
                       <td style={{padding:"4px 8px",color:players?.[l.jugador]?.color||"#aaa",fontWeight:700}}>
@@ -673,15 +914,15 @@ function GestorScreen({ roomCode }) {
         </div>
       )}
 
-      {/* CONFIG */}
+      {/* ── TAB CONFIG ── */}
       {tab==="config" && cfgLocal && (
         <Card accent="#a855f7">
-          <div style={{fontSize:12,color:"#555",marginBottom:16}}>CONFIGURACIÓN</div>
+          <div style={{fontSize:12,color:"#555",marginBottom:16}}>CONFIGURACIÓN EN VIVO</div>
           <label style={{color:"#777",fontSize:13,display:"flex",alignItems:"center",gap:10,marginBottom:14,cursor:"pointer"}}>
             <input type="checkbox" checked={!!cfgLocal.showEV}
               onChange={e=>setCfgLocal(c=>({...c,showEV:e.target.checked}))}
               style={{accentColor:"#f97316",width:16,height:16}}/>
-            Mostrar barra de Ventaja Esperada (EV) a los jugadores
+            Mostrar barra de EV a los jugadores
           </label>
           <label style={{color:"#777",fontSize:13,display:"block",marginBottom:6}}>
             Temporizador por ronda: <span style={{color:"#f97316"}}>
@@ -695,7 +936,7 @@ function GestorScreen({ roomCode }) {
             Guardar cambios
           </Btn>
           <hr style={{border:"none",borderTop:"1px solid #1e1e2e",margin:"16px 0"}}/>
-          <div style={{fontSize:11,color:"#555",marginBottom:8}}>CÓDIGO PARA COMPARTIR</div>
+          <div style={{fontSize:11,color:"#555",marginBottom:8}}>CÓDIGO DE SALA</div>
           <div style={{fontFamily:"monospace",fontSize:30,letterSpacing:8,color:"#f97316",
             fontWeight:900,background:"#0a0a0f",padding:"14px 20px",borderRadius:10,textAlign:"center"}}>
             {roomCode}
@@ -706,15 +947,16 @@ function GestorScreen({ roomCode }) {
   );
 }
 
-// ─── PANTALLA JUGADOR ────────────────────────────────────────────────────────
+// ─── PLAYER SCREEN ────────────────────────────────────────────────────────────
 function PlayerScreen({ roomCode, playerId, profile }) {
   const [room,     setRoom]     = useState(null);
   const [decidido, setDecidido] = useState(false);
-  const [overlay,  setOverlay]  = useState(null); // null | {type, msg}
+  const [overlay,  setOverlay]  = useState(null);
   const [timerLeft,setTimer]    = useState(null);
-  const prevRondaRef   = useRef(null);
-  const prevPartidaRef = useRef(null);
-  const timerRef       = useRef(null);
+  const prevRondaRef    = useRef(null);
+  const prevPartidaRef  = useRef(null);
+  const timerRef        = useRef(null);
+  const resolvedRef     = useRef(new Set()); // evitar doble resolución
 
   useEffect(()=>{
     const r=ref(db,`rooms/${roomCode}`);
@@ -722,7 +964,10 @@ function PlayerScreen({ roomCode, playerId, profile }) {
     return ()=>off(r);
   },[roomCode]);
 
-  // Detectar cambio de ronda para animaciones
+  const getMyPair  = useCallback((r,n)=> Object.values(r?.partidas?.[n]||{}).find(p=>(p.jugadores||[]).includes(playerId))||null,[playerId]);
+  const getPairKey = useCallback((r,n)=> Object.keys(r?.partidas?.[n]||{}).find(k=>(r.partidas[n][k].jugadores||[]).includes(playerId))||null,[playerId]);
+
+  // Animaciones por cambio de ronda/partida
   useEffect(()=>{
     if (!room) return;
     const n = room.status?.partidaActual||0;
@@ -732,20 +977,21 @@ function PlayerScreen({ roomCode, playerId, profile }) {
 
     if (prevRondaRef.current!==null && ronda!==prevRondaRef.current) {
       setDecidido(false);
-      if (ronda<=3) {
-        setOverlay({type:"rolling", msg:
-          ronda===1?"🎲 ¡Dados lanzados! Toma tu decisión":
+      if (ronda<=3&&!myPair.resultado) {
+        setOverlay({type:"rolling",msg:
+          ronda===1?"🎲 ¡Dados lanzados!":
           ronda===2?"🌐 Primer dado público revelado":
                     "🌐 Segundo dado público revelado"});
-        setTimeout(()=>setOverlay(null),1800);
+        setTimeout(()=>setOverlay(null), 1800);
       }
     }
-    if (prevPartidaRef.current!==null && n!==prevPartidaRef.current) {
+    if (prevPartidaRef.current!==null && n!==prevPartidaRef.current && n>0) {
       setDecidido(false);
-      setOverlay({type:"next", msg:`⚔️ Partida ${n} — ¡Nueva partida!`});
-      setTimeout(()=>setOverlay(null),1600);
+      resolvedRef.current.clear();
+      setOverlay({type:"next",msg:`⚔️ ¡Partida ${n} comenzando!`});
+      setTimeout(()=>setOverlay(null), 1800);
     }
-    prevRondaRef.current  = ronda;
+    prevRondaRef.current   = ronda;
     prevPartidaRef.current = n;
   },[room]);
 
@@ -758,156 +1004,71 @@ function PlayerScreen({ roomCode, playerId, profile }) {
     const myPair = getMyPair(room, room.status?.partidaActual||0);
     if (!myPair||myPair.resultado) { setTimer(null); return; }
     const elapsed = Math.floor((Date.now()-(myPair.startedAt||Date.now()))/1000);
-    const left = Math.max(0, secs-elapsed);
+    const left = Math.max(0,secs-elapsed);
     setTimer(left);
-    timerRef.current = setInterval(()=>setTimer(l=>Math.max(0,(l||0)-1)),1000);
+    timerRef.current=setInterval(()=>setTimer(l=>Math.max(0,(l||0)-1)),1000);
     return ()=>clearInterval(timerRef.current);
   },[room?.status?.partidaActual, room?.config?.timerSecs]);
 
-  const getMyPair = (r,n) => {
-    const partidas = r?.partidas?.[n]||{};
-    return Object.values(partidas).find(p=>(p.jugadores||[]).includes(playerId))||null;
-  };
-
-  const getPairKey = (r,n) => {
-    const partidas = r?.partidas?.[n]||{};
-    return Object.keys(partidas).find(k=>(partidas[k].jugadores||[]).includes(playerId))||null;
-  };
+  // Detectar cuando el rival decidió mientras yo ya había decidido
+  useEffect(()=>{
+    if (!room||!decidido) return;
+    const n = room.status?.partidaActual||0;
+    const pairKey = getPairKey(room,n);
+    if (!pairKey) return;
+    const pd = room.partidas?.[n]?.[pairKey];
+    if (!pd||pd.resultado) { setOverlay(null); return; }
+    const ronda  = pd.ronda||1;
+    const rival  = (pd.jugadores||[]).find(j=>j!==playerId);
+    const myDec  = pd.decisiones?.[`${ronda}_${playerId}`];
+    const rivDec = pd.decisiones?.[`${ronda}_${rival}`];
+    const resolveKey = `${n}_${pairKey}_${ronda}`;
+    if (myDec && rivDec && !resolvedRef.current.has(resolveKey) && playerId < rival) {
+      resolvedRef.current.add(resolveKey);
+      setOverlay(null);
+      resolveRondaDB(roomCode, room, n, pairKey, pd, ronda, playerId, myDec, rival, rivDec);
+    }
+  },[room, decidido]);
 
   const decidir = async (accion) => {
     if (decidido) return;
     const n = room.status?.partidaActual||0;
     const pairKey = getPairKey(room,n);
     if (!pairKey) return;
-    const pd  = room.partidas[n][pairKey];
+    const pd    = room.partidas[n][pairKey];
     const ronda = pd.ronda||1;
-
-    // Calcular EV y tiempo
-    const myDice   = pd.dados?.[playerId]||[];
-    const pubVis   = (pd.publicos||[]).slice(0, ronda-1);
-    const ev       = calcEV([...myDice,...pubVis]);
-    const tiempo   = Date.now()-(pd.startedAt||Date.now());
-    const rival    = (pd.jugadores||[]).find(j=>j!==playerId);
-    const fase     = pd.fases?.[playerId]||"control";
+    const rival = (pd.jugadores||[]).find(j=>j!==playerId);
+    const myDice= pd.dados?.[playerId]||[];
+    const pubVis= (pd.publicos||[]).slice(0,ronda-1);
+    const ev    = calcEV([...myDice,...pubVis]);
+    const tiempo= Date.now()-(pd.startedAt||Date.now());
 
     setDecidido(true);
-    setOverlay({type:"waiting", msg:"Esperando al otro jugador…"});
+    setOverlay({type:"waiting",msg:"Esperando al otro jugador…"});
 
-    // Guardar decisión en Firebase
     const decKey = `${ronda}_${playerId}`;
     await update(ref(db,`rooms/${roomCode}/partidas/${n}/${pairKey}/decisiones`),{[decKey]:accion});
 
-    // Log
     const logRef = push(ref(db,`rooms/${roomCode}/logs`));
     await set(logRef,{
       partida:n, pairKey, jugador:playerId, rival,
       nickname_jugador:profile?.nickname||"",
       nickname_rival:room.players?.[rival]?.nickname||"",
-      accion, ronda, ev, tiempo_ms:tiempo, fase,
+      accion, ronda, ev, tiempo_ms:tiempo,
+      fase:pd.fases?.[playerId]||"control",
       suma_propia:myDice.reduce((a,b)=>a+b,0),
       suma_publica:pubVis.reduce((a,b)=>a+b,0),
       resultado:null, ts:Date.now(),
     });
 
-    // Verificar si el rival ya decidió
+    // Si el rival ya había decidido, resolver ahora
     const rivalDec = pd.decisiones?.[`${ronda}_${rival}`];
-    if (rivalDec) {
+    const resolveKey = `${n}_${pairKey}_${ronda}`;
+    if (rivalDec && !resolvedRef.current.has(resolveKey) && playerId < rival) {
+      resolvedRef.current.add(resolveKey);
       setOverlay(null);
-      await resolveRonda(n, pairKey, pd, ronda, playerId, accion, rival, rivalDec);
+      await resolveRondaDB(roomCode, room, n, pairKey, pd, ronda, playerId, accion, rival, rivalDec);
     }
-    // Si no, esperamos que el listener de Firebase detone cuando el rival decida
-  };
-
-  // Efecto que detecta cuando el rival decide mientras yo ya decidí
-  useEffect(()=>{
-    if (!room||!decidido) return;
-    const n = room.status?.partidaActual||0;
-    const pairKey = getPairKey(room,n);
-    if (!pairKey) return;
-    const pd    = room.partidas?.[n]?.[pairKey];
-    if (!pd||pd.resultado) { setOverlay(null); return; }
-    const ronda  = pd.ronda||1;
-    const rival  = (pd.jugadores||[]).find(j=>j!==playerId);
-    const myDec  = pd.decisiones?.[`${ronda}_${playerId}`];
-    const rivDec = pd.decisiones?.[`${ronda}_${rival}`];
-    if (myDec && rivDec) {
-      setOverlay(null);
-      resolveRonda(n, pairKey, pd, ronda, playerId, myDec, rival, rivDec);
-    }
-  },[room]);
-
-  const resolveRonda = async (n,pairKey,pd,ronda,pidA,decA,pidB,decB)=>{
-    // Evitar doble ejecución: solo el jugador A (lexicográficamente menor) resuelve
-    if (pidA > pidB) return;
-
-    if (decA==="retirarse"||decB==="retirarse") {
-      const ganador = decA==="retirarse"?pidB:pidA;
-      await finalizarPartida(n,pairKey,pd,ganador,"Retirada");
-      return;
-    }
-    // Ambos apostaron: descuento y avance
-    const newPot = (pd.pot||2)+2;
-    const balA   = room.balance?.[pidA]??10;
-    const balB   = room.balance?.[pidB]??10;
-    const upds   = {
-      [`balance/${pidA}`]:balA-1,
-      [`balance/${pidB}`]:balB-1,
-    };
-
-    if (ronda>=3) {
-      // Ronda 3 → evaluar ganador
-      const dA=pd.dados?.[pidA]||[]; const dB=pd.dados?.[pidB]||[];
-      const pub=pd.publicos||[];
-      const sA=dA.reduce((a,b)=>a+b,0)+pub.reduce((a,b)=>a+b,0);
-      const sB=dB.reduce((a,b)=>a+b,0)+pub.reduce((a,b)=>a+b,0);
-      const t3A=[...dA,...pub].filter(v=>v===1).length>=3;
-      const t3B=[...dB,...pub].filter(v=>v===1).length>=3;
-      let ganador;
-      if      (t3A&&!t3B) ganador=pidA;
-      else if (t3B&&!t3A) ganador=pidB;
-      else if (sA>sB)     ganador=pidA;
-      else if (sB>sA)     ganador=pidB;
-      else                ganador="empate";
-      upds[`partidas/${n}/${pairKey}/pot`]  = newPot;
-      upds[`partidas/${n}/${pairKey}/ronda`] = 4;
-      await update(ref(db,`rooms/${roomCode}`), upds);
-      await finalizarPartida(n,pairKey,{...pd,pot:newPot},ganador,"Suma final");
-    } else {
-      upds[`partidas/${n}/${pairKey}/pot`]        = newPot;
-      upds[`partidas/${n}/${pairKey}/ronda`]      = ronda+1;
-      upds[`partidas/${n}/${pairKey}/startedAt`]  = Date.now();
-      upds[`partidas/${n}/${pairKey}/decisiones`] = null;
-      await update(ref(db,`rooms/${roomCode}`), upds);
-    }
-  };
-
-  const finalizarPartida = async (n,pairKey,pd,ganador,motivo)=>{
-    const [p1,p2] = pd.jugadores||[];
-    const pot = pd.pot||2;
-    let b1=room.balance?.[p1]??10, b2=room.balance?.[p2]??10;
-    let res;
-    if (ganador==="empate") {
-      b1+=Math.floor(pot/2); b2+=Math.floor(pot/2); res="Empate";
-    } else {
-      if (ganador===p1) b1+=pot; else b2+=pot;
-      const nick=room.players?.[ganador]?.nickname||ganador;
-      res=`Ganó ${nick} (${motivo})`;
-    }
-    await update(ref(db,`rooms/${roomCode}`),{
-      [`balance/${p1}`]:b1, [`balance/${p2}`]:b2,
-      [`partidas/${n}/${pairKey}/resultado`]:res,
-      [`partidas/${n}/${pairKey}/ronda`]:4,
-    });
-    // Log resultado
-    const logRef=push(ref(db,`rooms/${roomCode}/logs`));
-    await set(logRef,{
-      partida:n,pairKey,jugador:ganador,rival:"",
-      nickname_jugador:room.players?.[ganador]?.nickname||"",
-      nickname_rival:"",
-      accion:"resultado",ronda:4,ev:0,tiempo_ms:0,
-      fase:pd.fases?.[ganador]||"control",
-      suma_propia:0,suma_publica:0,resultado:res,ts:Date.now(),
-    });
   };
 
   // ── RENDER ──────────────────────────────────────────────────────────────────
@@ -927,7 +1088,6 @@ function PlayerScreen({ roomCode, playerId, profile }) {
   const myBal   = balance?.[playerId]??10;
   const myColor = profile?.color||"#f97316";
 
-  // LOBBY / FINISHED
   if (phase==="lobby"||phase==="finished") return (
     <div style={{maxWidth:420,margin:"0 auto",padding:"48px 20px",textAlign:"center"}}>
       <GlobalCSS/>
@@ -946,7 +1106,6 @@ function PlayerScreen({ roomCode, playerId, profile }) {
     </div>
   );
 
-  // Sin par asignado todavía
   if (!myPair) return (
     <div style={{maxWidth:420,margin:"0 auto",padding:"60px 20px",textAlign:"center"}}>
       <GlobalCSS/>
@@ -955,114 +1114,116 @@ function PlayerScreen({ roomCode, playerId, profile }) {
     </div>
   );
 
-  // Datos del par
-  const rival    = (myPair.jugadores||[]).find(j=>j!==playerId);
-  const rivalInfo= players?.[rival];
-  const myDice   = myPair.dados?.[playerId]||[];
-  const ronda    = myPair.ronda||1;
-  const pubAll   = myPair.publicos||[];
-  const pubDice  = pubAll.map((v,i)=>({value:v,visible:i<ronda-1}));
-  const pot      = myPair.pot||0;
-  const resultado= myPair.resultado||null;
-  const fase     = myPair.fases?.[playerId]||"control";
-  const canCheat = fase==="yo_trampo"||fase==="ambos";
-  const rivalDice= myPair.dados?.[rival]||[];
-  const mySum    = myDice.reduce((a,b)=>a+b,0);
-  const pubVis   = pubDice.filter(d=>d.visible).map(d=>d.value);
-  const pubSum   = pubVis.reduce((a,b)=>a+b,0);
-  const totalVis = mySum+pubSum;
-  const ev       = myDice.length?calcEV([...myDice,...pubVis]):0;
-  const yaDecidio= !!myPair.decisiones?.[`${ronda}_${playerId}`];
-  const rivDecidio=!!myPair.decisiones?.[`${ronda}_${rival}`];
+  const rival     = (myPair.jugadores||[]).find(j=>j!==playerId);
+  const rivalInfo = players?.[rival];
+  const myDice    = myPair.dados?.[playerId]||[];
+  const ronda     = myPair.ronda||1;
+  const pubAll    = myPair.publicos||[];
+  const pubDice   = pubAll.map((v,i)=>({value:v,visible:i<ronda-1}));
+  const pot       = myPair.pot||0;
+  const resultado = myPair.resultado||null;
+  const fase      = myPair.fases?.[playerId]||"control";
+  const canCheat  = fase==="yo_trampo"||fase==="ambos";
+  const rivalDice = myPair.dados?.[rival]||[];
+  const mySum     = myDice.reduce((a,b)=>a+b,0);
+  const pubVis    = pubDice.filter(d=>d.visible).map(d=>d.value);
+  const pubSum    = pubVis.reduce((a,b)=>a+b,0);
+  const totalVis  = mySum+pubSum;
+  const ev        = myDice.length?calcEV([...myDice,...pubVis]):0;
+  const yaDecidio = !!myPair.decisiones?.[`${ronda}_${playerId}`];
+  const rivDecidio= !!myPair.decisiones?.[`${ronda}_${rival}`];
+  const isShaking = overlay?.type==="rolling";
 
-  // RESULTADO de esta partida
-  if (resultado) return (
-    <div style={{maxWidth:420,margin:"0 auto",padding:"24px 16px"}}>
-      <GlobalCSS/>
-      <Overlay show={true}>
-        <Card style={{maxWidth:340,textAlign:"center",padding:40,animation:"fadeIn 0.3s ease",
-          border:`1px solid ${resultado.includes(profile?.nickname)?"#22c55e":resultado==="Empate"?"#aaa":"#ef4444"}44`}}>
-          <div style={{fontSize:72,marginBottom:12}}>
-            {resultado==="Empate"?"🤝":resultado.includes(profile?.nickname||"____")?"🏆":"💀"}
-          </div>
-          <h2 style={{color:resultado==="Empate"?"#aaa":resultado.includes(profile?.nickname||"____")?"#22c55e":"#ef4444",
-            marginBottom:8,fontSize:22}}>
-            {resultado==="Empate"?"¡Empate!":resultado.includes(profile?.nickname||"____")?"¡Ganaste!":"¡Perdiste!"}
-          </h2>
-          <p style={{color:"#666",fontSize:13,marginBottom:16}}>{resultado}</p>
-          <div style={{background:"#0a0a0f",borderRadius:10,padding:12,marginBottom:16}}>
-            <div style={{fontSize:12,color:"#555",marginBottom:4}}>
-              Mis dados: <span style={{color:myColor}}>{myDice.join(" + ")} = {mySum}</span>
+  // RESULTADO
+  if (resultado) {
+    const gane   = resultado.includes(profile?.nickname||"___NOBODY___");
+    const empate = resultado==="Empate";
+    return (
+      <div style={{maxWidth:420,margin:"0 auto",padding:"24px 16px"}}>
+        <GlobalCSS/>
+        <Overlay show={true}>
+          <Card style={{maxWidth:340,textAlign:"center",padding:40,animation:"popIn 0.4s ease",
+            border:`1px solid ${empate?"#aaa":gane?"#22c55e":"#ef4444"}44`}}>
+            <div style={{fontSize:80,marginBottom:8,animation:"popIn 0.5s ease"}}>
+              {empate?"🤝":gane?"🏆":"💀"}
             </div>
-            <div style={{fontSize:12,color:"#555",marginBottom:4}}>
-              Públicos: <span style={{color:"#22c55e"}}>{pubAll.join(" + ")} = {pubAll.reduce((a,b)=>a+b,0)}</span>
+            <h2 style={{color:empate?"#aaa":gane?"#22c55e":"#ef4444",marginBottom:8,fontSize:24}}>
+              {empate?"¡Empate!":gane?"¡Ganaste!":"¡Perdiste!"}
+            </h2>
+            <p style={{color:"#666",fontSize:13,marginBottom:16}}>{resultado}</p>
+            <div style={{background:"#0a0a0f",borderRadius:10,padding:12,marginBottom:14,textAlign:"left"}}>
+              <div style={{fontSize:12,color:"#555",marginBottom:4}}>
+                Mis dados: <span style={{color:myColor,fontWeight:700}}>{myDice.join(" + ")} = {mySum}</span>
+              </div>
+              <div style={{fontSize:12,color:"#555",marginBottom:4}}>
+                Públicos: <span style={{color:"#22c55e",fontWeight:700}}>{pubAll.join(" + ")} = {pubAll.reduce((a,b)=>a+b,0)}</span>
+              </div>
+              <div style={{fontSize:12,color:"#555"}}>
+                Rival: <span style={{color:rivalInfo?.color,fontWeight:700}}>{rivalDice.join(" + ")} = {rivalDice.reduce((a,b)=>a+b,0)}</span>
+              </div>
+              <div style={{borderTop:"1px solid #1e1e2e",marginTop:8,paddingTop:8,
+                fontSize:14,fontWeight:700,color:"#fff"}}>
+                Mi total: {mySum+pubAll.reduce((a,b)=>a+b,0)}
+              </div>
             </div>
-            <div style={{fontSize:13,color:"#aaa",fontWeight:700}}>
-              Total: {mySum+pubAll.reduce((a,b)=>a+b,0)}
-            </div>
-          </div>
-          <div style={{fontSize:22,fontWeight:900,color:"#f97316",marginBottom:16}}>💰 {myBal} fichas</div>
-          <Btn onClick={()=>{ setDecidido(false); setOverlay(null); }} variant="ghost" style={{width:"100%"}}>
-            Ver pantalla
-          </Btn>
-        </Card>
-      </Overlay>
-      {/* Pantalla de fondo (borrosa) */}
-      <PlayerHeader profile={profile} balance={myBal} roomCode={roomCode} partida={n} total={config?.totalPartidas}/>
-      <Card style={{marginTop:12,textAlign:"center",padding:24}}>
-        <div style={{color:"#555",fontSize:14}}>Partida {n} finalizada</div>
-        <div style={{color:"#444",fontSize:13,marginTop:4}}>Espera al gestor para la siguiente</div>
-      </Card>
-    </div>
-  );
+            <div style={{fontSize:22,fontWeight:900,color:"#f97316",marginBottom:4}}>💰 {myBal} fichas</div>
+            <p style={{color:"#555",fontSize:12}}>Espera la siguiente partida…</p>
+          </Card>
+        </Overlay>
+        <PlayerHeader profile={profile} balance={myBal} roomCode={roomCode} partida={n} total={config?.totalPartidas}/>
+      </div>
+    );
+  }
 
-  // JUEGO EN CURSO
+  // EN JUEGO
   return (
     <div style={{maxWidth:420,margin:"0 auto",padding:"16px 16px 80px"}}>
       <GlobalCSS/>
 
-      {/* Overlay animaciones */}
+      {/* Overlays */}
       <Overlay show={overlay?.type==="rolling"}>
         <div style={{textAlign:"center"}}>
-          <div style={{fontSize:80,display:"inline-block",animation:"shakeDie 0.4s ease infinite"}}>🎲</div>
-          <div style={{color:"#f97316",fontWeight:700,fontSize:18,marginTop:12,maxWidth:280}}>{overlay?.msg}</div>
+          <div style={{fontSize:88,display:"inline-block",animation:"shakeDie 0.4s ease infinite"}}>🎲</div>
+          <div style={{color:"#f97316",fontWeight:700,fontSize:18,marginTop:12,maxWidth:280,
+            animation:"slideUp 0.3s ease"}}>{overlay?.msg}</div>
         </div>
       </Overlay>
+
       <Overlay show={overlay?.type==="waiting"}>
         <div style={{textAlign:"center"}}>
-          <div style={{fontSize:56,display:"inline-block",animation:"pulse 1.2s infinite"}}>⏳</div>
-          <div style={{color:"#aaa",fontSize:16,marginTop:12}}>{overlay?.msg}</div>
+          <div style={{fontSize:60,display:"inline-block",animation:"pulse 1.2s infinite"}}>⏳</div>
+          <div style={{color:"#aaa",fontSize:16,marginTop:14,animation:"slideUp 0.3s ease"}}>{overlay?.msg}</div>
         </div>
       </Overlay>
+
       <Overlay show={overlay?.type==="next"}>
-        <div style={{textAlign:"center",animation:"fadeIn 0.3s ease"}}>
-          <div style={{fontSize:64}}>⚔️</div>
-          <div style={{color:"#f97316",fontWeight:700,fontSize:20,marginTop:12}}>{overlay?.msg}</div>
+        <div style={{textAlign:"center",animation:"popIn 0.4s ease"}}>
+          <div style={{fontSize:72}}>⚔️</div>
+          <div style={{color:"#f97316",fontWeight:900,fontSize:22,marginTop:12}}>{overlay?.msg}</div>
         </div>
       </Overlay>
 
       <PlayerHeader profile={profile} balance={myBal} roomCode={roomCode} partida={n} total={config?.totalPartidas}/>
 
       {/* Timer */}
-      {timerLeft!==null && (
-        <div style={{textAlign:"center",margin:"6px 0"}}>
-          <span style={{fontFamily:"monospace",fontSize:22,fontWeight:900,
+      {timerLeft!==null&&(
+        <div style={{textAlign:"center",margin:"4px 0"}}>
+          <span style={{fontFamily:"monospace",fontSize:20,fontWeight:900,
             color:timerLeft<=5?"#ef4444":timerLeft<=15?"#eab308":"#555"}}>
             ⏱ {timerLeft}s
           </span>
         </div>
       )}
 
-      {/* Indicador de rondas */}
-      <div style={{display:"flex",gap:6,marginBottom:10}}>
-        {[{n:1,label:"Dados"},{n:2,label:"Pub·1"},{n:3,label:"Pub·2"},{n:4,label:"Final"}].map(r=>(
-          <div key={r.n} style={{flex:1,textAlign:"center",padding:"7px 4px",borderRadius:10,
+      {/* Progress rondas */}
+      <div style={{display:"flex",gap:5,marginBottom:10}}>
+        {[{n:1,l:"Dados"},{n:2,l:"Pub·1"},{n:3,l:"Pub·2"},{n:4,l:"Final"}].map(r=>(
+          <div key={r.n} style={{flex:1,textAlign:"center",padding:"6px 2px",borderRadius:10,
             background:ronda>r.n?"#22c55e18":ronda===r.n?"#f9731618":"#12121e",
-            border:`1px solid ${ronda>r.n?"#22c55e55":ronda===r.n?"#f9731655":"#1e1e2e"}`,
-          }}>
-            <div style={{fontSize:9,color:"#444",marginBottom:2}}>R{r.n}</div>
+            border:`1px solid ${ronda>r.n?"#22c55e55":ronda===r.n?"#f9731655":"#1e1e2e"}`}}>
+            <div style={{fontSize:9,color:"#444"}}>R{r.n}</div>
             <div style={{fontSize:10,fontWeight:700,color:ronda>r.n?"#22c55e":ronda===r.n?"#f97316":"#333"}}>
-              {r.label}
+              {r.l}
             </div>
           </div>
         ))}
@@ -1071,19 +1232,19 @@ function PlayerScreen({ roomCode, playerId, profile }) {
       {/* Mis dados */}
       <Card accent={myColor} style={{marginBottom:10}}>
         <div style={{fontSize:11,color:"#555",marginBottom:8}}>TUS DADOS</div>
-        <DiceRow dice={myDice} size={58} color={myColor} shake={overlay?.type==="rolling"}/>
-        {/* Suma visual */}
-        <div style={{marginTop:12,display:"flex",justifyContent:"center",gap:6,alignItems:"center",
+        <DiceRow dice={myDice} size={58} color={myColor} shake={isShaking}/>
+        <div style={{marginTop:12,display:"flex",justifyContent:"center",gap:5,alignItems:"center",
           flexWrap:"wrap",fontSize:16,fontWeight:700}}>
-          {myDice.map((v,i)=>(
-            <span key={i} style={{color:myColor}}>{v}</span>
-          )).reduce((acc,el,i,arr)=>i<arr.length-1?[...acc,el,<span key={`p${i}`} style={{color:"#333"}}>+</span>]:[...acc,el],[])}
-          {pubVis.map((v,i)=>(
-            <span key={`pv${i}`} style={{color:"#22c55e"}}>+{v}</span>
-          ))}
-          <span style={{color:"#fff",fontSize:20,marginLeft:4}}>=&nbsp;<span style={{color:"#f97316"}}>{totalVis}</span></span>
+          {myDice.map((v,i,arr)=>[
+            <span key={i} style={{color:myColor}}>{v}</span>,
+            i<arr.length-1&&<span key={`op${i}`} style={{color:"#333"}}>+</span>
+          ])}
+          {pubVis.map((v,i)=><span key={`pv${i}`} style={{color:"#22c55e"}}>+{v}</span>)}
+          <span style={{color:"#fff",fontSize:22,marginLeft:4}}>
+            = <span style={{color:"#f97316",animation:isShaking?"none":"slideUp 0.3s ease"}}>{totalVis}</span>
+          </span>
         </div>
-        {config?.showEV && <div style={{marginTop:10}}><EVBar value={ev} label="Ventaja esperada (EV)" color={myColor}/></div>}
+        {config?.showEV&&<div style={{marginTop:10}}><EVBar value={ev} label="Ventaja esperada (EV)" color={myColor}/></div>}
       </Card>
 
       {/* Dados públicos */}
@@ -1092,7 +1253,7 @@ function PlayerScreen({ roomCode, playerId, profile }) {
         <div style={{display:"flex",gap:10,justifyContent:"center"}}>
           {pubDice.map((d,i)=>(
             <Die key={i} value={d.value} hidden={!d.visible} size={52}
-              color="#22c55e" shake={overlay?.type==="rolling"&&d.visible}/>
+              color="#22c55e" shake={isShaking&&d.visible} glow={d.visible}/>
           ))}
         </div>
       </Card>
@@ -1104,10 +1265,11 @@ function PlayerScreen({ roomCode, playerId, profile }) {
         </div>
         <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
           {rivalInfo&&<>
-            <span style={{fontSize:24}}>{rivalInfo.avatar}</span>
+            <span style={{fontSize:24}}>{rivalInfo.isBot?"🤖":rivalInfo.avatar}</span>
             <span style={{color:rivalInfo.color,fontWeight:700}}>{rivalInfo.nickname}</span>
+            {rivalInfo.isBot&&<Badge color="#22c55e">BOT</Badge>}
           </>}
-          {rivDecidio&&!yaDecidio&&<Badge color="#22c55e">✓ Ya decidió</Badge>}
+          {rivDecidio&&<Badge color="#22c55e">✓ Decidió</Badge>}
         </div>
         <div style={{display:"flex",gap:10,justifyContent:"center"}}>
           <Die value={rivalDice[0]} hidden={!canCheat} size={50} color="#eab308" glow={canCheat}/>
@@ -1115,15 +1277,13 @@ function PlayerScreen({ roomCode, playerId, profile }) {
         </div>
       </Card>
 
-      {/* Pozo */}
       <div style={{textAlign:"center",color:"#a855f7",fontWeight:700,fontSize:16,margin:"8px 0"}}>
         🏆 Pozo: {pot} fichas
       </div>
 
-      {/* Acciones o espera */}
-      {ronda<=3 && (
+      {ronda<=3&&(
         yaDecidio
-          ? <Card style={{textAlign:"center",padding:20,background:"#12121e",border:"1px solid #1e1e2e"}}>
+          ? <Card style={{textAlign:"center",padding:20,background:"#0f0f1a",border:"1px solid #1e1e2e"}}>
               <div style={{color:"#444",fontSize:14,animation:"pulse 1.5s infinite"}}>
                 ⏳ Esperando al otro jugador…
               </div>
@@ -1139,11 +1299,10 @@ function PlayerScreen({ roomCode, playerId, profile }) {
               </Btn>
             </div>
       )}
+
       {ronda>=4&&!resultado&&(
         <Card style={{textAlign:"center",padding:20}}>
-          <div style={{color:"#555",fontSize:14,animation:"pulse 1.5s infinite"}}>
-            ⏳ Calculando resultado…
-          </div>
+          <div style={{color:"#555",fontSize:14,animation:"pulse 1.5s infinite"}}>⏳ Calculando…</div>
         </Card>
       )}
     </div>
@@ -1170,55 +1329,7 @@ function PlayerHeader({ profile, balance, roomCode, partida, total }) {
   );
 }
 
-// ─── PERFIL GESTOR (componente separado — hooks no pueden estar dentro de if) ──
-function GestorProfileScreen({ roomCode, onJoined }) {
-  const [gNick, setGNick] = useState("");
-  const [gCol,  setGCol]  = useState("#a855f7");
-  const [gLoad, setGLoad] = useState(false);
-
-  const joinGestor = async () => {
-    if (!gNick.trim()) return;
-    setGLoad(true);
-    const prof = { uid:"gestor", nickname:gNick.trim(), avatar:"🔬", color:gCol, role:"gestor" };
-    await set(ref(db,`rooms/${roomCode}/players/gestor`), prof);
-    onJoined(prof);
-    setGLoad(false);
-  };
-
-  return (
-    <div style={{maxWidth:420,margin:"0 auto",padding:"32px 20px"}}>
-      <GlobalCSS/>
-      <div style={{textAlign:"center",marginBottom:16}}>
-        <div style={{fontSize:11,color:"#555",fontFamily:"monospace"}}>SALA</div>
-        <div style={{fontSize:26,fontWeight:900,color:"#a855f7",fontFamily:"monospace",letterSpacing:4}}>{roomCode}</div>
-      </div>
-      <Card accent="#a855f7">
-        <div style={{textAlign:"center",marginBottom:16}}>
-          <div style={{fontSize:60,filter:`drop-shadow(0 0 14px ${gCol})`}}>🔬</div>
-          <div style={{color:gCol,fontWeight:700,fontSize:18,marginTop:4}}>{gNick||"Gestor"}</div>
-        </div>
-        <label style={{color:"#777",fontSize:13,display:"block",marginBottom:6}}>Tu nombre</label>
-        <input value={gNick} onChange={e=>setGNick(e.target.value)} placeholder="Dr. Stats"
-          onKeyDown={e=>e.key==="Enter"&&joinGestor()}
-          style={{width:"100%",background:"#0a0a0f",border:"1px solid #2a2a3a",borderRadius:10,
-            padding:"10px 14px",color:"#fff",fontFamily:"inherit",fontSize:15,
-            marginBottom:16,boxSizing:"border-box",outline:"none"}}/>
-        <label style={{color:"#777",fontSize:13,display:"block",marginBottom:8}}>Color</label>
-        <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:20}}>
-          {COLORS.map(c=>(
-            <button key={c} onClick={()=>setGCol(c)} style={{width:28,height:28,background:c,
-              borderRadius:"50%",border:`3px solid ${gCol===c?"#fff":"transparent"}`,cursor:"pointer"}}/>
-          ))}
-        </div>
-        <Btn onClick={joinGestor} disabled={!gNick.trim()||gLoad} variant="purple" style={{width:"100%"}}>
-          {gLoad?"Entrando...":"Entrar como Gestor 🔬"}
-        </Btn>
-      </Card>
-    </div>
-  );
-}
-
-// ─── FLUJO DE UNIRSE ─────────────────────────────────────────────────────────
+// ─── JOIN FLOW ────────────────────────────────────────────────────────────────
 function JoinFlow({ roomCode, onBack }) {
   const [step,    setStep]    = useState("role");
   const [role,    setRole]    = useState(null);
@@ -1236,8 +1347,8 @@ function JoinFlow({ roomCode, onBack }) {
   if (step==="role") return (
     <div style={{maxWidth:420,margin:"0 auto",padding:"40px 20px"}}>
       <GlobalCSS/>
-      <button onClick={onBack} style={{background:"none",border:"none",color:"#555",cursor:"pointer",
-        marginBottom:20,fontSize:14}}>← Volver</button>
+      <button onClick={onBack} style={{background:"none",border:"none",color:"#555",
+        cursor:"pointer",marginBottom:20,fontSize:14}}>← Volver</button>
       <div style={{textAlign:"center",marginBottom:24}}>
         <div style={{fontSize:11,color:"#555",fontFamily:"monospace"}}>SALA</div>
         <div style={{fontSize:28,fontWeight:900,color:"#f97316",fontFamily:"monospace",letterSpacing:4}}>{roomCode}</div>
@@ -1245,8 +1356,8 @@ function JoinFlow({ roomCode, onBack }) {
       <h2 style={{color:"#fff",marginBottom:16}}>¿Quién eres?</h2>
       <div style={{display:"flex",flexDirection:"column",gap:10}}>
         {[
-          {r:"jugador", label:"Jugador",              color:"#f97316", emoji:"🎲", desc:"Participante del experimento"},
-          {r:"gestor",  label:"Gestor / Investigador", color:"#a855f7", emoji:"🔬", desc:"Control de la sala"},
+          {r:"jugador", label:"Jugador",              color:"#f97316",emoji:"🎲",desc:"Participante del experimento"},
+          {r:"gestor",  label:"Gestor / Investigador", color:"#a855f7",emoji:"🔬",desc:"Control de la sala"},
         ].map(({r,label,color,emoji,desc})=>(
           <button key={r} onClick={()=>{ setRole(r); setStep(r==="gestor"?"pw":"profile_jugador"); }}
             style={{background:"#12121e",border:`1px solid ${color}33`,borderRadius:12,
@@ -1268,8 +1379,7 @@ function JoinFlow({ roomCode, onBack }) {
       <h2 style={{color:"#a855f7",marginBottom:20}}>🔐 Acceso de Gestor</h2>
       <Card accent="#a855f7">
         <input type="password" value={pw} onChange={e=>setPw(e.target.value)}
-          placeholder="Contraseña del gestor"
-          onKeyDown={e=>e.key==="Enter"&&checkPw()}
+          placeholder="Contraseña del gestor" onKeyDown={e=>e.key==="Enter"&&checkPw()}
           style={{width:"100%",background:"#0a0a0f",border:"1px solid #2a2a3a",borderRadius:10,
             padding:"11px 14px",color:"#fff",fontFamily:"inherit",fontSize:15,
             marginBottom:12,boxSizing:"border-box",outline:"none"}}/>
@@ -1289,21 +1399,18 @@ function JoinFlow({ roomCode, onBack }) {
       onJoined={prof=>{ setProfile(prof); setStep("play"); }}/>
   );
 
-  // step === "play"
   if (step==="play") {
     if (role==="gestor") return <GestorScreen roomCode={roomCode}/>;
     return <PlayerScreen roomCode={roomCode} playerId={uid} profile={profile}/>;
   }
 }
 
-
-
 // ─── ROOT ─────────────────────────────────────────────────────────────────────
 export default function App() {
   const [screen,   setScreen]   = useState("home");
   const [roomCode, setRoomCode] = useState(null);
 
-  if (screen==="home")   return <HomeScreen   onGestor={()=>setScreen("create")} onJoin={c=>{ setRoomCode(c); setScreen("join"); }}/>;
+  if (screen==="home")   return <HomeScreen onGestor={()=>setScreen("create")} onJoin={c=>{ setRoomCode(c); setScreen("join"); }}/>;
   if (screen==="create") return <CreateRoomScreen onCreated={code=>{ setRoomCode(code); setScreen("join"); }}/>;
   if (screen==="join")   return <JoinFlow roomCode={roomCode} onBack={()=>setScreen("home")}/>;
 }
