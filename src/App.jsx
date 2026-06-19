@@ -1170,6 +1170,54 @@ function PlayerHeader({ profile, balance, roomCode, partida, total }) {
   );
 }
 
+// ─── PERFIL GESTOR (componente separado — hooks no pueden estar dentro de if) ──
+function GestorProfileScreen({ roomCode, onJoined }) {
+  const [gNick, setGNick] = useState("");
+  const [gCol,  setGCol]  = useState("#a855f7");
+  const [gLoad, setGLoad] = useState(false);
+
+  const joinGestor = async () => {
+    if (!gNick.trim()) return;
+    setGLoad(true);
+    const prof = { uid:"gestor", nickname:gNick.trim(), avatar:"🔬", color:gCol, role:"gestor" };
+    await set(ref(db,`rooms/${roomCode}/players/gestor`), prof);
+    onJoined(prof);
+    setGLoad(false);
+  };
+
+  return (
+    <div style={{maxWidth:420,margin:"0 auto",padding:"32px 20px"}}>
+      <GlobalCSS/>
+      <div style={{textAlign:"center",marginBottom:16}}>
+        <div style={{fontSize:11,color:"#555",fontFamily:"monospace"}}>SALA</div>
+        <div style={{fontSize:26,fontWeight:900,color:"#a855f7",fontFamily:"monospace",letterSpacing:4}}>{roomCode}</div>
+      </div>
+      <Card accent="#a855f7">
+        <div style={{textAlign:"center",marginBottom:16}}>
+          <div style={{fontSize:60,filter:`drop-shadow(0 0 14px ${gCol})`}}>🔬</div>
+          <div style={{color:gCol,fontWeight:700,fontSize:18,marginTop:4}}>{gNick||"Gestor"}</div>
+        </div>
+        <label style={{color:"#777",fontSize:13,display:"block",marginBottom:6}}>Tu nombre</label>
+        <input value={gNick} onChange={e=>setGNick(e.target.value)} placeholder="Dr. Stats"
+          onKeyDown={e=>e.key==="Enter"&&joinGestor()}
+          style={{width:"100%",background:"#0a0a0f",border:"1px solid #2a2a3a",borderRadius:10,
+            padding:"10px 14px",color:"#fff",fontFamily:"inherit",fontSize:15,
+            marginBottom:16,boxSizing:"border-box",outline:"none"}}/>
+        <label style={{color:"#777",fontSize:13,display:"block",marginBottom:8}}>Color</label>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:20}}>
+          {COLORS.map(c=>(
+            <button key={c} onClick={()=>setGCol(c)} style={{width:28,height:28,background:c,
+              borderRadius:"50%",border:`3px solid ${gCol===c?"#fff":"transparent"}`,cursor:"pointer"}}/>
+          ))}
+        </div>
+        <Btn onClick={joinGestor} disabled={!gNick.trim()||gLoad} variant="purple" style={{width:"100%"}}>
+          {gLoad?"Entrando...":"Entrar como Gestor 🔬"}
+        </Btn>
+      </Card>
+    </div>
+  );
+}
+
 // ─── FLUJO DE UNIRSE ─────────────────────────────────────────────────────────
 function JoinFlow({ roomCode, onBack }) {
   const [step,    setStep]    = useState("role");
@@ -1197,8 +1245,8 @@ function JoinFlow({ roomCode, onBack }) {
       <h2 style={{color:"#fff",marginBottom:16}}>¿Quién eres?</h2>
       <div style={{display:"flex",flexDirection:"column",gap:10}}>
         {[
-          {r:"jugador",  label:"Jugador",               color:"#f97316", emoji:"🎲", desc:"Participante del experimento"},
-          {r:"gestor",   label:"Gestor / Investigador",  color:"#a855f7", emoji:"🔬", desc:"Control de la sala"},
+          {r:"jugador", label:"Jugador",              color:"#f97316", emoji:"🎲", desc:"Participante del experimento"},
+          {r:"gestor",  label:"Gestor / Investigador", color:"#a855f7", emoji:"🔬", desc:"Control de la sala"},
         ].map(({r,label,color,emoji,desc})=>(
           <button key={r} onClick={()=>{ setRole(r); setStep(r==="gestor"?"pw":"profile_jugador"); }}
             style={{background:"#12121e",border:`1px solid ${color}33`,borderRadius:12,
@@ -1231,65 +1279,24 @@ function JoinFlow({ roomCode, onBack }) {
     </div>
   );
 
-  // Perfil para jugador normal (requiere sala abierta)
   if (step==="profile_jugador") return (
     <ProfileScreen roomCode={roomCode}
       onJoined={(newUid,prof)=>{ setUid(newUid); setProfile(prof); setStep("play"); }}/>
   );
 
-  // Perfil para gestor (sin restricción de sala abierta)
-  if (step==="profile_gestor") {
-    const [gNick, setGNick]   = useState("");
-    const [gAv,   setGAv]     = useState("🔬");
-    const [gCol,  setGCol]    = useState("#a855f7");
-    const [gLoad, setGLoad]   = useState(false);
+  if (step==="profile_gestor") return (
+    <GestorProfileScreen roomCode={roomCode}
+      onJoined={prof=>{ setProfile(prof); setStep("play"); }}/>
+  );
 
-    const joinGestor = async () => {
-      if (!gNick.trim()) return;
-      setGLoad(true);
-      const prof = { uid:"gestor", nickname:gNick.trim(), avatar:gAv, color:gCol, role:"gestor" };
-      await set(ref(db,`rooms/${roomCode}/players/gestor`), prof);
-      setProfile(prof); setStep("play");
-      setGLoad(false);
-    };
-
-    return (
-      <div style={{maxWidth:420,margin:"0 auto",padding:"32px 20px"}}>
-        <GlobalCSS/>
-        <div style={{textAlign:"center",marginBottom:16}}>
-          <div style={{fontSize:11,color:"#555",fontFamily:"monospace"}}>SALA</div>
-          <div style={{fontSize:26,fontWeight:900,color:"#a855f7",fontFamily:"monospace",letterSpacing:4}}>{roomCode}</div>
-        </div>
-        <Card accent="#a855f7">
-          <div style={{textAlign:"center",marginBottom:16}}>
-            <div style={{fontSize:60,filter:`drop-shadow(0 0 14px ${gCol})`}}>{gAv}</div>
-            <div style={{color:gCol,fontWeight:700,fontSize:18,marginTop:4}}>{gNick||"Gestor"}</div>
-          </div>
-          <label style={{color:"#777",fontSize:13,display:"block",marginBottom:6}}>Nombre del gestor</label>
-          <input value={gNick} onChange={e=>setGNick(e.target.value)} placeholder="Dr. Stats"
-            style={{width:"100%",background:"#0a0a0f",border:"1px solid #2a2a3a",borderRadius:10,
-              padding:"10px 14px",color:"#fff",fontFamily:"inherit",fontSize:15,
-              marginBottom:16,boxSizing:"border-box",outline:"none"}}/>
-          <label style={{color:"#777",fontSize:13,display:"block",marginBottom:8}}>Color</label>
-          <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:16}}>
-            {COLORS.map(c=>(
-              <button key={c} onClick={()=>setGCol(c)} style={{width:28,height:28,background:c,
-                borderRadius:"50%",border:`3px solid ${gCol===c?"#fff":"transparent"}`,cursor:"pointer"}}/>
-            ))}
-          </div>
-          <Btn onClick={joinGestor} disabled={!gNick.trim()||gLoad} variant="purple" style={{width:"100%"}}>
-            {gLoad?"Entrando...":"Entrar como Gestor"}
-          </Btn>
-        </Card>
-      </div>
-    );
-  }
-
+  // step === "play"
   if (step==="play") {
     if (role==="gestor") return <GestorScreen roomCode={roomCode}/>;
     return <PlayerScreen roomCode={roomCode} playerId={uid} profile={profile}/>;
   }
 }
+
+
 
 // ─── ROOT ─────────────────────────────────────────────────────────────────────
 export default function App() {
