@@ -28,330 +28,355 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 
-// ─── AVATARES ─────────────────────────────────────────────────────────────────
-const AVATARS = ["🦇", "🐺", "🕷️", "🦉", "🐈‍⬛", "💀", "🐸", "🦊", "🐙", "🐝"];
-const COLORS = [
-  "#f97316","#22c55e","#a855f7","#3b82f6","#ef4444",
-  "#eab308","#06b6d4","#ec4899","#14b8a6","#f59e0b",
-];
+// ─── CONSTANTES ───────────────────────────────────────────────────────────────
+const AVATARS = ["🦇","🐺","🕷️","🦉","🐈‍⬛","💀","🐸","🦊","🐙","🐝"];
+const COLORS  = ["#f97316","#22c55e","#a855f7","#3b82f6","#ef4444","#eab308","#06b6d4","#ec4899","#14b8a6","#f59e0b"];
 
 // ─── UTILS ────────────────────────────────────────────────────────────────────
-const rollDie = () => Math.floor(Math.random() * 6) + 1;
-const genCode = () => Math.random().toString(36).substring(2, 7).toUpperCase();
-const calcEV = (dice) => dice.reduce((a, b) => a + b, 0) / (6 * dice.length);
+const roll   = () => Math.floor(Math.random() * 6) + 1;
+const genCode = () => Math.random().toString(36).substring(2,7).toUpperCase();
+const calcEV  = (dice) => dice.length ? dice.reduce((a,b)=>a+b,0)/(6*dice.length) : 0;
+const sleep   = (ms) => new Promise(r => setTimeout(r, ms));
+
+// Emparejamiento round-robin aleatorizado sin repetir rival
+function buildSchedule(playerIds, totalPartidas) {
+  const n = playerIds.length;
+  const schedule = {}; // schedule[pid] = [rival_pid, ...]
+  playerIds.forEach(p => schedule[p] = []);
+
+  // Generar rondas round-robin
+  const rounds = [];
+  const ids = [...playerIds];
+  if (n % 2 !== 0) ids.push("BYE");
+  const half = ids.length / 2;
+  for (let r = 0; r < ids.length - 1; r++) {
+    const pairs = [];
+    for (let i = 0; i < half; i++) {
+      const a = ids[i], b = ids[ids.length - 1 - i];
+      if (a !== "BYE" && b !== "BYE") pairs.push([a, b]);
+    }
+    rounds.push(pairs);
+    ids.splice(1, 0, ids.pop()); // rotate
+  }
+
+  // Llenar hasta totalPartidas repitiendo rondas si es necesario
+  let ri = 0;
+  for (let p = 0; p < totalPartidas; p++) {
+    const round = rounds[ri % rounds.length];
+    round.forEach(([a, b]) => {
+      if (schedule[a] && schedule[b]) {
+        schedule[a].push(b);
+        schedule[b].push(a);
+      }
+    });
+    ri++;
+  }
+  return schedule;
+}
+
+// Distribución de fases por jugador por partida
+function buildFaseSchedule(playerIds, totalPartidas, cfg) {
+  // cfg: { control, yo_trampo, rival_trampa, ambos } — suman totalPartidas
+  const fases = {};
+  playerIds.forEach(pid => {
+    const pool = [
+      ...Array(cfg.control   || 0).fill("control"),
+      ...Array(cfg.yo_trampo || 0).fill("yo_trampo"),
+      ...Array(cfg.rival_trampa || 0).fill("rival_trampa"),
+      ...Array(cfg.ambos     || 0).fill("ambos"),
+    ];
+    // Shuffle
+    for (let i = pool.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i+1));
+      [pool[i], pool[j]] = [pool[j], pool[i]];
+    }
+    fases[pid] = pool.slice(0, totalPartidas);
+  });
+  return fases;
+}
 
 // ─── DADO SVG ─────────────────────────────────────────────────────────────────
-const DOT_POSITIONS = {
-  1: [[50, 50]],
-  2: [[25, 25],[75, 75]],
-  3: [[25, 25],[50, 50],[75, 75]],
-  4: [[25, 25],[75, 25],[25, 75],[75, 75]],
-  5: [[25, 25],[75, 25],[50, 50],[25, 75],[75, 75]],
-  6: [[25, 20],[75, 20],[25, 50],[75, 50],[25, 80],[75, 80]],
+const DOTS = {
+  1:[[50,50]],2:[[28,28],[72,72]],3:[[28,28],[50,50],[72,72]],
+  4:[[28,28],[72,28],[28,72],[72,72]],5:[[28,28],[72,28],[50,50],[28,72],[72,72]],
+  6:[[28,22],[72,22],[28,50],[72,50],[28,78],[72,78]],
 };
 
-function Die({ value, hidden = false, size = 64, glow = false, color = "#f97316" }) {
+function Die({ value, hidden=false, size=60, color="#f97316", shake=false }) {
   return (
-    <svg
-      width={size} height={size} viewBox="0 0 100 100"
+    <svg width={size} height={size} viewBox="0 0 100 100"
       style={{
-        borderRadius: 14,
-        background: hidden ? "#1e1e2e" : "#0f0f1a",
-        border: `2px solid ${glow ? color : "#333"}`,
-        boxShadow: glow ? `0 0 12px ${color}88` : "none",
-        flexShrink: 0,
-      }}
-    >
-      {hidden ? (
-        <text x="50" y="65" textAnchor="middle" fontSize="42" fill="#444">?</text>
-      ) : (
-        (DOT_POSITIONS[value] || []).map(([cx, cy], i) => (
-          <circle key={i} cx={cx} cy={cy} r={9} fill={color} />
-        ))
-      )}
+        borderRadius:14, background: hidden?"#1e1e2e":"#0f0f1a",
+        border:`2px solid ${hidden?"#333":color}`,
+        boxShadow: hidden ? "none" : `0 0 14px ${color}66`,
+        flexShrink:0, transition:"all 0.3s",
+        animation: shake ? "shakeDie 0.4s ease" : "none",
+      }}>
+      {hidden
+        ? <text x="50" y="65" textAnchor="middle" fontSize="42" fill="#333">?</text>
+        : (DOTS[value]||[]).map(([cx,cy],i) =>
+            <circle key={i} cx={cx} cy={cy} r={9} fill={color}/>
+          )
+      }
     </svg>
   );
 }
 
-function DiceRow({ dice, hidden = false, size = 56, color = "#f97316" }) {
+function DiceRow({ dice, hidden=false, size=56, color="#f97316", shake=false }) {
   return (
-    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
-      {dice.map((v, i) => (
-        <Die key={i} value={v} hidden={hidden} size={size} color={color} glow={!hidden} />
-      ))}
+    <div style={{display:"flex",gap:10,flexWrap:"wrap",justifyContent:"center"}}>
+      {dice.map((v,i) => <Die key={i} value={v} hidden={hidden} size={size} color={color} shake={shake}/>)}
     </div>
   );
 }
 
-// ─── COMPONENTES BASE ─────────────────────────────────────────────────────────
-function Card({ children, style = {}, accent = "#f97316" }) {
+// ─── COMPONENTES UI ───────────────────────────────────────────────────────────
+function Card({ children, style={}, accent="#f97316" }) {
   return (
     <div style={{
-      background: "#12121e",
-      border: `1px solid ${accent}44`,
-      borderRadius: 16,
-      padding: "20px 24px",
-      boxShadow: `0 0 20px ${accent}11`,
-      ...style,
-    }}>
-      {children}
-    </div>
+      background:"#12121e", border:`1px solid ${accent}44`,
+      borderRadius:16, padding:"16px 20px",
+      boxShadow:`0 0 20px ${accent}11`, ...style,
+    }}>{children}</div>
   );
 }
 
-function Btn({ children, onClick, variant = "primary", disabled = false, style = {} }) {
-  const variants = {
-    primary: { bg: "#f97316", color: "#000", border: "none" },
-    success: { bg: "#22c55e", color: "#000", border: "none" },
-    danger:  { bg: "#ef4444", color: "#fff", border: "none" },
-    ghost:   { bg: "transparent", color: "#f97316", border: "1px solid #f97316" },
-    purple:  { bg: "#a855f7", color: "#fff", border: "none" },
+function Btn({ children, onClick, variant="primary", disabled=false, style={} }) {
+  const V = {
+    primary:{bg:"#f97316",color:"#000"},
+    success:{bg:"#22c55e",color:"#000"},
+    danger: {bg:"#ef4444",color:"#fff"},
+    ghost:  {bg:"transparent",color:"#f97316",border:"1px solid #f97316"},
+    purple: {bg:"#a855f7",color:"#fff"},
+    dark:   {bg:"#1e1e2e",color:"#aaa",border:"1px solid #333"},
   };
-  const v = variants[variant] || variants.primary;
+  const v = V[variant]||V.primary;
   return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      style={{
-        background: disabled ? "#333" : v.bg,
-        color: disabled ? "#666" : v.color,
-        border: v.border,
-        borderRadius: 10,
-        padding: "10px 22px",
-        fontWeight: 700,
-        fontSize: 15,
-        cursor: disabled ? "not-allowed" : "pointer",
-        transition: "all 0.15s",
-        fontFamily: "inherit",
-        ...style,
-      }}
-    >
-      {children}
-    </button>
+    <button onClick={onClick} disabled={disabled} style={{
+      background:disabled?"#222":v.bg, color:disabled?"#555":v.color,
+      border:v.border||"none", borderRadius:10, padding:"11px 22px",
+      fontWeight:700, fontSize:15, cursor:disabled?"not-allowed":"pointer",
+      transition:"all 0.15s", fontFamily:"inherit", ...style,
+    }}>{children}</button>
   );
 }
 
-function EVBar({ value, label, color = "#f97316" }) {
-  const pct = Math.round(value * 100);
+function EVBar({ value, label, color="#f97316" }) {
+  const pct = Math.round(value*100);
   return (
-    <div style={{ marginBottom: 8 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#aaa", marginBottom: 4 }}>
-        <span>{label}</span><span style={{ color }}>{pct}%</span>
+    <div style={{marginBottom:6}}>
+      <div style={{display:"flex",justifyContent:"space-between",fontSize:12,color:"#aaa",marginBottom:3}}>
+        <span>{label}</span><span style={{color}}>{pct}%</span>
       </div>
-      <div style={{ background: "#222", borderRadius: 6, height: 8 }}>
-        <div style={{ width: `${pct}%`, background: color, borderRadius: 6, height: "100%", transition: "width 0.4s" }} />
+      <div style={{background:"#222",borderRadius:6,height:7}}>
+        <div style={{width:`${pct}%`,background:color,borderRadius:6,height:"100%",transition:"width 0.5s"}}/>
       </div>
     </div>
+  );
+}
+
+function Badge({ children, color="#f97316" }) {
+  return (
+    <span style={{
+      display:"inline-block", padding:"3px 10px", borderRadius:20,
+      background:`${color}22`, color, fontSize:12, fontWeight:700,
+    }}>{children}</span>
+  );
+}
+
+function AnimOverlay({ show, children }) {
+  if (!show) return null;
+  return (
+    <div style={{
+      position:"fixed", inset:0, background:"#0a0a0fcc",
+      display:"flex", alignItems:"center", justifyContent:"center",
+      zIndex:100, backdropFilter:"blur(4px)",
+      animation:"fadeIn 0.2s ease",
+    }}>{children}</div>
   );
 }
 
 // ─── PANTALLA: INICIO ─────────────────────────────────────────────────────────
 function HomeScreen({ onGestor, onJoin }) {
-  const [joinCode, setJoinCode] = useState("");
+  const [code, setCode] = useState("");
   return (
-    <div style={{ maxWidth: 440, margin: "0 auto", padding: "40px 20px" }}>
-      <div style={{ textAlign: "center", marginBottom: 40 }}>
-        <div style={{ fontSize: 64, marginBottom: 8 }}>🎃</div>
-        <h1 style={{ fontSize: 32, fontWeight: 900, color: "#f97316", margin: 0, letterSpacing: -1 }}>
+    <div style={{maxWidth:420,margin:"0 auto",padding:"48px 20px"}}>
+      <style>{`
+        @keyframes float { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-8px)} }
+        @keyframes fadeIn { from{opacity:0;transform:scale(0.95)} to{opacity:1;transform:scale(1)} }
+        @keyframes shakeDie { 0%,100%{transform:rotate(0deg)} 25%{transform:rotate(-8deg)} 75%{transform:rotate(8deg)} }
+        @keyframes slideUp { from{opacity:0;transform:translateY(20px)} to{opacity:1;transform:translateY(0)} }
+        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
+        @keyframes spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+      `}</style>
+      <div style={{textAlign:"center",marginBottom:40}}>
+        <div style={{fontSize:72,animation:"float 3s ease-in-out infinite",display:"inline-block"}}>🎃</div>
+        <h1 style={{fontSize:34,fontWeight:900,color:"#f97316",margin:"8px 0 0",letterSpacing:-1}}>
           TRICK OR TREAT
         </h1>
-        <p style={{ color: "#666", marginTop: 8, fontSize: 14 }}>
-          Experimento de teoría de juegos · UTEC
+        <p style={{color:"#555",marginTop:6,fontSize:13,letterSpacing:1}}>
+          EXPERIMENTO · TEORÍA DE JUEGOS · UTEC
         </p>
       </div>
-
-      <Card accent="#a855f7" style={{ marginBottom: 16 }}>
-        <p style={{ color: "#aaa", margin: "0 0 14px", fontSize: 13 }}>¿Eres el investigador?</p>
-        <Btn onClick={onGestor} variant="purple" style={{ width: "100%" }}>
-          🔬 Crear sala como Gestor
-        </Btn>
+      <Card accent="#a855f7" style={{marginBottom:12}}>
+        <p style={{color:"#888",margin:"0 0 12px",fontSize:13}}>¿Eres el investigador?</p>
+        <Btn onClick={onGestor} variant="purple" style={{width:"100%"}}>🔬 Crear sala como Gestor</Btn>
       </Card>
-
       <Card accent="#f97316">
-        <p style={{ color: "#aaa", margin: "0 0 14px", fontSize: 13 }}>¿Eres un jugador?</p>
-        <div style={{ display: "flex", gap: 8 }}>
-          <input
-            value={joinCode}
-            onChange={e => setJoinCode(e.target.value.toUpperCase())}
-            placeholder="Código de sala"
-            maxLength={5}
-            style={{
-              flex: 1, background: "#0a0a0f", border: "1px solid #333",
-              borderRadius: 10, padding: "10px 14px", color: "#fff",
-              fontFamily: "monospace", fontSize: 18, letterSpacing: 3,
-              outline: "none",
-            }}
-          />
-          <Btn onClick={() => onJoin(joinCode)} disabled={joinCode.length < 4}>
-            Unirse
-          </Btn>
+        <p style={{color:"#888",margin:"0 0 12px",fontSize:13}}>¿Eres jugador? Ingresa el código de sala:</p>
+        <div style={{display:"flex",gap:8}}>
+          <input value={code} onChange={e=>setCode(e.target.value.toUpperCase())}
+            placeholder="XXXXX" maxLength={5}
+            style={{flex:1,background:"#0a0a0f",border:"1px solid #333",borderRadius:10,
+              padding:"11px 14px",color:"#f97316",fontFamily:"monospace",fontSize:22,
+              letterSpacing:6,outline:"none",textAlign:"center"}}/>
+          <Btn onClick={()=>onJoin(code)} disabled={code.length<4}>Entrar</Btn>
         </div>
       </Card>
     </div>
   );
 }
 
-// ─── PANTALLA: CREAR SALA (GESTOR) ────────────────────────────────────────────
+// ─── PANTALLA: CREAR SALA ─────────────────────────────────────────────────────
 function CreateRoomScreen({ onCreated }) {
-  const [password, setPassword] = useState("");
-  const [rounds, setRounds] = useState(5);
+  const [pw, setPw] = useState("");
+  const [totalPartidas, setTotalPartidas] = useState(5);
+  const [cfg, setCfg] = useState({control:1, yo_trampo:2, rival_trampa:1, ambos:1});
   const [loading, setLoading] = useState(false);
+  const suma = Object.values(cfg).reduce((a,b)=>a+b,0);
+
+  const update_ = (k,v) => setCfg(c=>({...c,[k]:Math.max(0,v)}));
 
   const create = async () => {
-    if (!password) return;
+    if (!pw) return;
     setLoading(true);
     const code = genCode();
-    const roomRef = ref(db, `rooms/${code}`);
-    const room = {
-      code,
-      password,
-      config: { rounds, fase: "control", open: false },
-      state: {
-        hand: 0,
-        ronda: 0,
-        turno: null,
-        A_dados: [0, 0],
-        B_dados: [0, 0],
-        mesa: [0, 0],
-        pot: 0,
-        finalizado: true,
-        msg: "",
-        resultado_A: "",
-        resultado_B: "",
-      },
-      balance: { A: 10, B: 10, partidas: 0 },
-      players: {},
-      logs: {},
-      createdAt: serverTimestamp(),
-    };
-    await set(roomRef, room);
+    await set(ref(db,`rooms/${code}`), {
+      code, password:pw,
+      config:{ totalPartidas, faseConfig:cfg, showEV:false, timerSecs:0, open:false },
+      status:{ phase:"lobby", partidaActual:0 },
+      players:{}, pairs:{}, faseSchedule:{}, logs:{},
+      createdAt: Date.now(),
+    });
     setLoading(false);
-    onCreated(code, password);
+    onCreated(code, pw);
   };
 
   return (
-    <div style={{ maxWidth: 440, margin: "0 auto", padding: "40px 20px" }}>
-      <h2 style={{ color: "#a855f7", marginBottom: 24 }}>🔬 Nueva Sala Experimental</h2>
-      <Card accent="#a855f7">
-        <label style={{ color: "#aaa", fontSize: 13, display: "block", marginBottom: 6 }}>
-          Contraseña del gestor
-        </label>
-        <input
-          type="password"
-          value={password}
-          onChange={e => setPassword(e.target.value)}
-          placeholder="Solo tú la verás"
-          style={{
-            width: "100%", background: "#0a0a0f", border: "1px solid #333",
-            borderRadius: 10, padding: "10px 14px", color: "#fff",
-            fontFamily: "inherit", fontSize: 15, marginBottom: 20, boxSizing: "border-box",
-            outline: "none",
-          }}
-        />
+    <div style={{maxWidth:460,margin:"0 auto",padding:"36px 20px"}}>
+      <h2 style={{color:"#a855f7",marginBottom:20}}>🔬 Nueva Sala Experimental</h2>
+      <Card accent="#a855f7" style={{marginBottom:12}}>
+        <label style={{color:"#888",fontSize:13,display:"block",marginBottom:6}}>Contraseña del gestor</label>
+        <input type="password" value={pw} onChange={e=>setPw(e.target.value)} placeholder="Solo el gestor la sabe"
+          style={{width:"100%",background:"#0a0a0f",border:"1px solid #333",borderRadius:10,
+            padding:"10px 14px",color:"#fff",fontFamily:"inherit",fontSize:15,
+            marginBottom:20,boxSizing:"border-box",outline:"none"}}/>
 
-        <label style={{ color: "#aaa", fontSize: 13, display: "block", marginBottom: 6 }}>
-          Rondas por mano: <span style={{ color: "#f97316" }}>{rounds}</span>
+        <label style={{color:"#888",fontSize:13,display:"block",marginBottom:6}}>
+          Total de partidas por jugador: <span style={{color:"#f97316"}}>{totalPartidas}</span>
         </label>
-        <input
-          type="range" min={3} max={7} value={rounds}
-          onChange={e => setRounds(+e.target.value)}
-          style={{ width: "100%", marginBottom: 24, accentColor: "#f97316" }}
-        />
+        <input type="range" min={2} max={10} value={totalPartidas}
+          onChange={e=>setTotalPartidas(+e.target.value)}
+          style={{width:"100%",marginBottom:20,accentColor:"#f97316"}}/>
 
-        <Btn onClick={create} disabled={!password || loading} variant="purple" style={{ width: "100%" }}>
-          {loading ? "Creando..." : "Crear sala"}
+        <div style={{fontSize:13,color:"#888",marginBottom:10}}>
+          Distribución de fases{" "}
+          <span style={{color: suma===totalPartidas?"#22c55e":"#ef4444",fontWeight:700}}>
+            ({suma}/{totalPartidas})
+          </span>
+        </div>
+        {[
+          {k:"control",      label:"🎯 Control (sin trampa)",      color:"#aaa"},
+          {k:"yo_trampo",    label:"🃏 Yo veo dado rival",          color:"#eab308"},
+          {k:"rival_trampa", label:"👁️ Rival ve uno de mis dados", color:"#ef4444"},
+          {k:"ambos",        label:"⚔️ Ambos ven un dado rival",    color:"#a855f7"},
+        ].map(({k,label,color})=>(
+          <div key={k} style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+            <span style={{flex:1,fontSize:13,color}}>{label}</span>
+            <button onClick={()=>update_(k,cfg[k]-1)} style={{background:"#1e1e2e",border:"1px solid #333",
+              borderRadius:6,color:"#aaa",width:28,height:28,cursor:"pointer",fontSize:16}}>-</button>
+            <span style={{color:"#fff",fontWeight:700,minWidth:20,textAlign:"center"}}>{cfg[k]}</span>
+            <button onClick={()=>update_(k,cfg[k]+1)} style={{background:"#1e1e2e",border:"1px solid #333",
+              borderRadius:6,color:"#aaa",width:28,height:28,cursor:"pointer",fontSize:16}}>+</button>
+          </div>
+        ))}
+
+        <Btn onClick={create} disabled={!pw||loading||suma!==totalPartidas} variant="purple" style={{width:"100%",marginTop:8}}>
+          {loading?"Creando...":"Crear sala"}
         </Btn>
+        {suma!==totalPartidas && <p style={{color:"#ef4444",fontSize:12,marginTop:8,textAlign:"center"}}>
+          La suma de fases debe ser igual al total de partidas ({totalPartidas})
+        </p>}
       </Card>
     </div>
   );
 }
 
-// ─── PANTALLA: PERFIL DE JUGADOR ──────────────────────────────────────────────
+// ─── PANTALLA: PERFIL ─────────────────────────────────────────────────────────
 function ProfileScreen({ roomCode, role, onJoined }) {
   const [nickname, setNickname] = useState("");
   const [avatar, setAvatar] = useState(AVATARS[0]);
-  const [color, setColor] = useState(COLORS[0]);
-  const [loading, setLoading] = useState(false);
+  const [color, setColor] = useState(COLORS[role==="A"?0:role==="B"?1:6]);
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
 
   const join = async () => {
     if (!nickname.trim()) return;
     setLoading(true);
-    const roomRef = ref(db, `rooms/${roomCode}`);
-    const snap = await get(roomRef);
+    const snap = await get(ref(db,`rooms/${roomCode}`));
     if (!snap.exists()) { setError("Sala no encontrada"); setLoading(false); return; }
     const room = snap.val();
-    if (!room.config.open && role !== "gestor") {
-      setError("La sala aún no está abierta. Espera al gestor."); setLoading(false); return;
-    }
-    const profile = { nickname: nickname.trim(), avatar, color, role, joinedAt: Date.now() };
-    await update(ref(db, `rooms/${roomCode}/players/${role}`), profile);
+    const profile = { nickname:nickname.trim(), avatar, color, role, joinedAt:Date.now(), balance:10 };
+    await update(ref(db,`rooms/${roomCode}/players/${role}`), profile);
     setLoading(false);
     onJoined(profile);
   };
 
   return (
-    <div style={{ maxWidth: 440, margin: "0 auto", padding: "40px 20px" }}>
-      <div style={{ textAlign: "center", marginBottom: 8 }}>
-        <span style={{ fontSize: 12, color: "#666", fontFamily: "monospace" }}>SALA</span>
-        <div style={{ fontSize: 28, fontWeight: 900, color: "#f97316", fontFamily: "monospace", letterSpacing: 4 }}>
-          {roomCode}
-        </div>
-        <div style={{ fontSize: 13, color: "#a855f7", marginBottom: 20 }}>
-          Entrando como: {role === "A" ? "Jugador A" : role === "B" ? "Jugador B" : "Gestor"}
-        </div>
+    <div style={{maxWidth:420,margin:"0 auto",padding:"36px 20px"}}>
+      <div style={{textAlign:"center",marginBottom:20}}>
+        <div style={{fontSize:11,color:"#555",fontFamily:"monospace"}}>SALA</div>
+        <div style={{fontSize:26,fontWeight:900,color:"#f97316",fontFamily:"monospace",letterSpacing:4}}>{roomCode}</div>
+        <Badge color={role==="gestor"?"#a855f7":role==="A"?"#3b82f6":"#f97316"}>
+          {role==="gestor"?"Gestor":role==="A"?"Jugador A":"Jugador B"}
+        </Badge>
       </div>
-
       <Card>
-        <div style={{ textAlign: "center", marginBottom: 20 }}>
-          <div style={{
-            fontSize: 72, lineHeight: 1,
-            filter: `drop-shadow(0 0 12px ${color})`,
-            marginBottom: 8,
-          }}>{avatar}</div>
-          <div style={{ fontWeight: 700, color, fontSize: 18 }}>{nickname || "Tu nombre aquí"}</div>
+        <div style={{textAlign:"center",marginBottom:20}}>
+          <div style={{fontSize:80,filter:`drop-shadow(0 0 16px ${color})`,lineHeight:1}}>{avatar}</div>
+          <div style={{fontWeight:700,color,fontSize:20,marginTop:6}}>{nickname||"Tu nombre"}</div>
         </div>
-
-        <label style={{ color: "#aaa", fontSize: 13, display: "block", marginBottom: 8 }}>Nickname</label>
-        <input
-          value={nickname}
-          onChange={e => setNickname(e.target.value)}
-          placeholder="Ej: StatsWizard"
+        <label style={{color:"#888",fontSize:13,display:"block",marginBottom:6}}>Nickname</label>
+        <input value={nickname} onChange={e=>setNickname(e.target.value)} placeholder="Ej: StatsWitch"
           maxLength={16}
-          style={{
-            width: "100%", background: "#0a0a0f", border: "1px solid #333",
-            borderRadius: 10, padding: "10px 14px", color: "#fff",
-            fontFamily: "inherit", fontSize: 15, marginBottom: 16, boxSizing: "border-box",
-            outline: "none",
-          }}
-        />
+          style={{width:"100%",background:"#0a0a0f",border:"1px solid #333",borderRadius:10,
+            padding:"10px 14px",color:"#fff",fontFamily:"inherit",fontSize:15,
+            marginBottom:16,boxSizing:"border-box",outline:"none"}}/>
 
-        <label style={{ color: "#aaa", fontSize: 13, display: "block", marginBottom: 8 }}>Avatar</label>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
-          {AVATARS.map(a => (
-            <button key={a} onClick={() => setAvatar(a)} style={{
-              fontSize: 28, background: avatar === a ? "#1e1e2e" : "transparent",
-              border: `2px solid ${avatar === a ? color : "#333"}`,
-              borderRadius: 10, padding: 6, cursor: "pointer",
-              transition: "all 0.15s",
+        <label style={{color:"#888",fontSize:13,display:"block",marginBottom:8}}>Avatar</label>
+        <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:16}}>
+          {AVATARS.map(a=>(
+            <button key={a} onClick={()=>setAvatar(a)} style={{
+              fontSize:26,background:avatar===a?"#1e1e2e":"transparent",
+              border:`2px solid ${avatar===a?color:"#2a2a3a"}`,
+              borderRadius:10,padding:6,cursor:"pointer",transition:"all 0.15s",
             }}>{a}</button>
           ))}
         </div>
 
-        <label style={{ color: "#aaa", fontSize: 13, display: "block", marginBottom: 8 }}>Color</label>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 20 }}>
-          {COLORS.map(c => (
-            <button key={c} onClick={() => setColor(c)} style={{
-              width: 32, height: 32, background: c, borderRadius: "50%",
-              border: `3px solid ${color === c ? "#fff" : "transparent"}`,
-              cursor: "pointer",
-            }} />
+        <label style={{color:"#888",fontSize:13,display:"block",marginBottom:8}}>Color</label>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:20}}>
+          {COLORS.map(c=>(
+            <button key={c} onClick={()=>setColor(c)} style={{
+              width:30,height:30,background:c,borderRadius:"50%",
+              border:`3px solid ${color===c?"#fff":"transparent"}`,cursor:"pointer",
+            }}/>
           ))}
         </div>
 
-        {error && <p style={{ color: "#ef4444", fontSize: 13, marginBottom: 12 }}>{error}</p>}
-        <Btn onClick={join} disabled={!nickname.trim() || loading} style={{ width: "100%" }}>
-          {loading ? "Entrando..." : "Entrar al juego"}
+        {error && <p style={{color:"#ef4444",fontSize:13,marginBottom:12}}>{error}</p>}
+        <Btn onClick={join} disabled={!nickname.trim()||loading} style={{width:"100%"}}>
+          {loading?"Entrando...":"Entrar al juego 🎃"}
         </Btn>
       </Card>
     </div>
@@ -359,263 +384,322 @@ function ProfileScreen({ roomCode, role, onJoined }) {
 }
 
 // ─── PANTALLA: GESTOR ─────────────────────────────────────────────────────────
-function GestorScreen({ roomCode, password, profile }) {
+function GestorScreen({ roomCode, profile }) {
   const [room, setRoom] = useState(null);
-  const [logs, setLogs] = useState([]);
-  const [activeTab, setActiveTab] = useState("control");
-  const [newRounds, setNewRounds] = useState(5);
+  const [tab, setTab] = useState("control");
+  const [cfgLocal, setCfgLocal] = useState(null);
 
-  useEffect(() => {
-    const roomRef = ref(db, `rooms/${roomCode}`);
-    const unsub = onValue(roomRef, snap => {
-      if (snap.exists()) {
-        const r = snap.val();
-        setRoom(r);
-        setNewRounds(r.config?.rounds || 5);
-        setLogs(r.logs ? Object.values(r.logs).sort((a, b) => a.ts - b.ts) : []);
-      }
+  useEffect(()=>{
+    const r = ref(db,`rooms/${roomCode}`);
+    const unsub = onValue(r, snap=>{ if(snap.exists()) { const d=snap.val(); setRoom(d); if(!cfgLocal) setCfgLocal(d.config); }});
+    return ()=>off(r);
+  },[roomCode]);
+
+  const openRoom  = ()=>update(ref(db,`rooms/${roomCode}/config`),{open:true});
+  const closeRoom = ()=>update(ref(db,`rooms/${roomCode}/config`),{open:false});
+
+  const startExperiment = async () => {
+    const players = Object.keys(room.players||{}).filter(k=>k!=="gestor");
+    if (players.length < 2) { alert("Necesitas al menos 2 jugadores"); return; }
+    const tp = room.config.totalPartidas;
+    const schedule  = buildSchedule(players, tp);
+    const faseSchedule = buildFaseSchedule(players, tp, room.config.faseConfig);
+    // Inicializar balance
+    const balanceInit = {};
+    players.forEach(p=>{ balanceInit[p]=10; });
+    await update(ref(db,`rooms/${roomCode}`),{
+      pairs: schedule,
+      faseSchedule,
+      "status/phase":"playing",
+      "status/partidaActual":1,
+      balance: balanceInit,
     });
-    return () => off(roomRef);
-  }, [roomCode]);
+    // Lanzar primera partida
+    await launchPartida(1, players, schedule, faseSchedule, room.config.totalPartidas);
+  };
 
-  const openRoom = () => update(ref(db, `rooms/${roomCode}/config`), { open: true });
-  const closeRoom = () => update(ref(db, `rooms/${roomCode}/config`), { open: false });
-
-  const setFase = (fase) => update(ref(db, `rooms/${roomCode}/config`), { fase });
-
-  const startHand = async () => {
-    const r = room;
-    const rounds = r.config.rounds || 5;
-    const A = [rollDie(), rollDie()];
-    const B = [rollDie(), rollDie()];
-    const mesa = Array.from({ length: rounds - 2 }, rollDie);
-    const newBalance = {
-      A: (r.balance?.A || 10) - 1,
-      B: (r.balance?.B || 10) - 1,
-      partidas: (r.balance?.partidas || 0) + 1,
-    };
-    await update(ref(db, `rooms/${roomCode}`), {
-      "state/hand": (r.state?.hand || 0) + 1,
-      "state/ronda": 1,
-      "state/turno": "A",
-      "state/A_dados": A,
-      "state/B_dados": B,
-      "state/mesa": mesa,
-      "state/pot": 2,
-      "state/finalizado": false,
-      "state/msg": "",
-      "state/resultado_A": "",
-      "state/resultado_B": "",
-      "state/inicio_turno": Date.now(),
-      "balance/A": newBalance.A,
-      "balance/B": newBalance.B,
-      "balance/partidas": newBalance.partidas,
+  const launchPartida = async (numPartida, players, schedule, faseSchedule, totalPartidas) => {
+    if (numPartida > totalPartidas) {
+      await update(ref(db,`rooms/${roomCode}/status`),{phase:"finished"});
+      return;
+    }
+    // Para cada par en esta partida
+    const idx = numPartida - 1;
+    const partidaData = {};
+    const done = new Set();
+    players.forEach(pid=>{
+      if (done.has(pid)) return;
+      const rival = (schedule[pid]||[])[idx];
+      if (!rival || done.has(rival)) return;
+      done.add(pid); done.add(rival);
+      const pairKey = [pid,rival].sort().join("_");
+      const faseA = (faseSchedule[pid]||[])[idx]||"control";
+      const faseB = (faseSchedule[rival]||[])[idx]||"control";
+      const privA = [roll(),roll()];
+      const privB = [roll(),roll()];
+      const pub1  = roll();
+      const pub2  = roll();
+      partidaData[pairKey] = {
+        jugadores:[pid,rival],
+        dados:{ [pid]:privA, [rival]:privB },
+        publicos:[pub1,pub2],
+        fases:{ [pid]:faseA, [rival]:faseB },
+        ronda:1,
+        pot:2,
+        decisiones:{},
+        resultado:null,
+        startedAt:Date.now(),
+      };
+    });
+    await update(ref(db,`rooms/${roomCode}/partidas/${numPartida}`), partidaData);
+    await update(ref(db,`rooms/${roomCode}/status`),{
+      phase:"playing", partidaActual:numPartida,
     });
   };
 
-  const resetSession = async () => {
-    await update(ref(db, `rooms/${roomCode}`), {
-      "balance/A": 10,
-      "balance/B": 10,
-      "balance/partidas": 0,
-      "state/finalizado": true,
-      "state/msg": "Sesión reiniciada",
-      "state/ronda": 0,
-      logs: null,
+  const nextPartida = async () => {
+    const snap = await get(ref(db,`rooms/${roomCode}`));
+    const r = snap.val();
+    const players = Object.keys(r.players||{}).filter(k=>k!=="gestor");
+    const next = (r.status?.partidaActual||1)+1;
+    await update(ref(db,`rooms/${roomCode}/status`),{partidaActual:next,phase:next>r.config.totalPartidas?"finished":"playing"});
+    if (next<=r.config.totalPartidas)
+      await launchPartida(next, players, r.pairs, r.faseSchedule, r.config.totalPartidas);
+  };
+
+  const resetSession = async ()=>{
+    const players = Object.keys(room?.players||{}).filter(k=>k!=="gestor");
+    const bal={};  players.forEach(p=>{bal[p]=10;});
+    await update(ref(db,`rooms/${roomCode}`),{
+      partidas:null, logs:null, balance:bal,
+      "status/phase":"lobby","status/partidaActual":0,
+      pairs:null, faseSchedule:null,
     });
   };
 
-  const exportCSV = () => {
+  const saveConfig = async ()=>{
+    await update(ref(db,`rooms/${roomCode}/config`),cfgLocal);
+  };
+
+  const exportCSV = ()=>{
+    const logs = Object.values(room?.logs||{}).sort((a,b)=>a.ts-b.ts);
     if (!logs.length) return;
-    const cols = ["hand","jugador","accion","ronda","ev","tiempo_ms","fase","resultado"];
-    const rows = logs.map(l => cols.map(c => l[c] ?? "").join(","));
-    const csv = [cols.join(","), ...rows].join("\n");
-    const blob = new Blob([csv], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = `trick_or_treat_${roomCode}.csv`; a.click();
+    const cols=["partida","pairKey","jugador","rival","accion","ronda","ev","tiempo_ms","fase","suma_propia","suma_publica","resultado"];
+    const rows=logs.map(l=>cols.map(c=>l[c]??"").join(","));
+    const csv=[cols.join(","),...rows].join("\n");
+    const url=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));
+    const a=document.createElement("a"); a.href=url; a.download=`tot_${roomCode}.csv`; a.click();
   };
 
-  const updateRounds = () => update(ref(db, `rooms/${roomCode}/config`), { rounds: newRounds });
+  if (!room) return <div style={{color:"#666",padding:40,textAlign:"center"}}>Cargando sala…</div>;
+  const {config,status,players,balance,partidas,logs:logsObj}=room;
+  const logs=Object.values(logsObj||{}).sort((a,b)=>a.ts-b.ts);
+  const allPlayers=Object.entries(players||{}).filter(([k])=>k!=="gestor");
+  const phase=status?.phase||"lobby";
+  const partidaActual=status?.partidaActual||0;
+  const partidaData=partidas?.[partidaActual]||{};
 
-  if (!room) return <div style={{ color: "#666", padding: 40, textAlign: "center" }}>Cargando sala…</div>;
-
-  const { state, balance, config, players } = room;
-  const fase = config?.fase || "control";
-  const FASE_LABELS = { control: "Control", A_pos: "A Tramposo", B_pos: "B Tramposo", ambos: "Ambos Tramposos" };
-
-  const tabs = [
-    { id: "control", label: "🎮 Control" },
-    { id: "data", label: "📊 Datos" },
-    { id: "config", label: "⚙️ Config" },
-  ];
+  const TABS=[{id:"control",label:"🎮 Control"},{id:"partidas",label:"🎲 Partidas"},{id:"datos",label:"📊 Datos"},{id:"config",label:"⚙️ Config"}];
 
   return (
-    <div style={{ maxWidth: 700, margin: "0 auto", padding: "20px 16px" }}>
-      {/* Header */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+    <div style={{maxWidth:720,margin:"0 auto",padding:"20px 16px"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
         <div>
-          <div style={{ fontSize: 11, color: "#666", fontFamily: "monospace" }}>GESTOR · SALA</div>
-          <div style={{ fontSize: 22, fontWeight: 900, color: "#a855f7", fontFamily: "monospace", letterSpacing: 3 }}>{roomCode}</div>
+          <div style={{fontSize:11,color:"#555",fontFamily:"monospace"}}>GESTOR · SALA</div>
+          <div style={{fontSize:24,fontWeight:900,color:"#a855f7",fontFamily:"monospace",letterSpacing:3}}>{roomCode}</div>
         </div>
-        <div style={{ textAlign: "right" }}>
-          <div style={{
-            display: "inline-block", padding: "4px 12px", borderRadius: 20,
-            background: config?.open ? "#22c55e22" : "#ef444422",
-            color: config?.open ? "#22c55e" : "#ef4444",
-            fontSize: 12, fontWeight: 700,
-          }}>
-            {config?.open ? "● ABIERTA" : "● CERRADA"}
-          </div>
+        <div style={{display:"flex",gap:8,alignItems:"center"}}>
+          <Badge color={config?.open?"#22c55e":"#ef4444"}>{config?.open?"● ABIERTA":"● CERRADA"}</Badge>
+          <Badge color={phase==="playing"?"#f97316":phase==="finished"?"#22c55e":"#666"}>
+            {phase==="lobby"?"LOBBY":phase==="playing"?`PARTIDA ${partidaActual}/${config?.totalPartidas}`:"FINALIZADO"}
+          </Badge>
         </div>
       </div>
 
       {/* Tabs */}
-      <div style={{ display: "flex", gap: 4, marginBottom: 20, background: "#1e1e2e", borderRadius: 12, padding: 4 }}>
-        {tabs.map(t => (
-          <button key={t.id} onClick={() => setActiveTab(t.id)} style={{
-            flex: 1, padding: "8px 4px", background: activeTab === t.id ? "#a855f7" : "transparent",
-            border: "none", borderRadius: 8, color: activeTab === t.id ? "#fff" : "#666",
-            fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit",
+      <div style={{display:"flex",gap:4,marginBottom:16,background:"#1e1e2e",borderRadius:12,padding:4}}>
+        {TABS.map(t=>(
+          <button key={t.id} onClick={()=>setTab(t.id)} style={{
+            flex:1,padding:"8px 4px",background:tab===t.id?"#a855f7":"transparent",
+            border:"none",borderRadius:8,color:tab===t.id?"#fff":"#666",
+            fontWeight:700,fontSize:13,cursor:"pointer",fontFamily:"inherit",
           }}>{t.label}</button>
         ))}
       </div>
 
-      {/* TAB: CONTROL */}
-      {activeTab === "control" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {/* Sala */}
+      {/* TAB CONTROL */}
+      {tab==="control" && (
+        <div style={{display:"flex",flexDirection:"column",gap:12}}>
           <Card accent="#a855f7">
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <Btn onClick={openRoom} variant="success" disabled={config?.open}>Abrir sala</Btn>
-              <Btn onClick={closeRoom} variant="danger" disabled={!config?.open}>Cerrar sala</Btn>
-              <Btn onClick={startHand} disabled={!config?.open || !state?.finalizado}>▶ Nueva mano</Btn>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+              {!config?.open
+                ? <Btn onClick={openRoom} variant="success">Abrir sala</Btn>
+                : <Btn onClick={closeRoom} variant="danger">Cerrar sala</Btn>}
+              {phase==="lobby" && config?.open &&
+                <Btn onClick={startExperiment} variant="primary">▶ Iniciar experimento</Btn>}
+              {phase==="playing" &&
+                <Btn onClick={nextPartida}>⏭ Siguiente partida</Btn>}
               <Btn onClick={resetSession} variant="ghost">↺ Reiniciar sesión</Btn>
             </div>
           </Card>
 
-          {/* Fase */}
-          <Card accent="#f97316">
-            <div style={{ fontSize: 12, color: "#aaa", marginBottom: 8 }}>FASE EXPERIMENTAL</div>
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-              {Object.entries(FASE_LABELS).map(([k, v]) => (
-                <button key={k} onClick={() => setFase(k)} style={{
-                  padding: "7px 14px", borderRadius: 8, fontWeight: 700, fontSize: 13,
-                  background: fase === k ? "#f97316" : "#1e1e2e",
-                  color: fase === k ? "#000" : "#aaa",
-                  border: `1px solid ${fase === k ? "#f97316" : "#333"}`,
-                  cursor: "pointer", fontFamily: "inherit",
-                }}>{v}</button>
-              ))}
-            </div>
-          </Card>
-
-          {/* Jugadores */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            {["A", "B"].map(p => {
-              const pl = players?.[p];
-              const bal = balance?.[p] ?? 10;
-              const ev = state?.finalizado ? null :
-                calcEV([...(state?.[`${p}_dados`] || []), ...(state?.mesa || []).slice(0, Math.max(0, (state?.ronda || 1) - 1))]);
-              return (
-                <Card key={p} accent={p === "A" ? "#3b82f6" : "#f97316"}>
-                  <div style={{ fontSize: 11, color: "#666", marginBottom: 4 }}>JUGADOR {p}</div>
-                  {pl ? (
-                    <>
-                      <div style={{ fontSize: 24 }}>{pl.avatar} <span style={{ color: pl.color, fontWeight: 700 }}>{pl.nickname}</span></div>
-                      <div style={{ color: "#aaa", fontSize: 13, marginTop: 4 }}>💰 {bal} fichas</div>
-                      {ev !== null && <EVBar value={ev} label="EV" color={p === "A" ? "#3b82f6" : "#f97316"} />}
-                      <DiceRow dice={state?.[`${p}_dados`] || [0, 0]} size={36} color={p === "A" ? "#3b82f6" : "#f97316"} />
-                    </>
-                  ) : (
-                    <div style={{ color: "#444", fontSize: 13 }}>Esperando jugador…</div>
-                  )}
-                </Card>
-              );
-            })}
-          </div>
-
-          {/* Mesa */}
+          {/* Jugadores en sala */}
           <Card>
-            <div style={{ fontSize: 12, color: "#aaa", marginBottom: 12 }}>
-              MESA · Ronda {state?.ronda || 0}/{config?.rounds || 5} · Turno: {state?.turno || "-"}
+            <div style={{fontSize:12,color:"#666",marginBottom:10}}>
+              JUGADORES EN SALA ({allPlayers.length})
             </div>
-            <DiceRow
-              dice={(state?.mesa || []).map((v, i) => v)}
-              hidden={false}
-              size={48}
-              color="#22c55e"
-            />
-            <div style={{ color: "#a855f7", fontWeight: 700, marginTop: 8 }}>🏆 Pozo: {state?.pot || 0} fichas</div>
-            {state?.msg && <div style={{ color: "#f97316", marginTop: 8, fontWeight: 700 }}>{state.msg}</div>}
+            <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+              {allPlayers.map(([pid,p])=>(
+                <div key={pid} style={{
+                  background:"#1e1e2e",borderRadius:10,padding:"8px 14px",
+                  border:`1px solid ${p.color}44`,
+                  display:"flex",alignItems:"center",gap:8,
+                }}>
+                  <span style={{fontSize:22}}>{p.avatar}</span>
+                  <div>
+                    <div style={{color:p.color,fontWeight:700,fontSize:14}}>{p.nickname}</div>
+                    <div style={{color:"#555",fontSize:11}}>💰 {balance?.[pid]??10} fichas</div>
+                  </div>
+                </div>
+              ))}
+              {allPlayers.length===0 && <span style={{color:"#444",fontSize:13}}>Esperando jugadores…</span>}
+            </div>
           </Card>
+
+          {/* Estado partida actual */}
+          {phase==="playing" && Object.entries(partidaData).map(([pairKey,pd])=>{
+            const [pA,pB]=pd.jugadores||[];
+            const pAInfo=players?.[pA]; const pBInfo=players?.[pB];
+            return (
+              <Card key={pairKey} accent="#f97316">
+                <div style={{fontSize:11,color:"#666",marginBottom:8}}>PAR · {pairKey}</div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+                  {[[pA,pAInfo],[pB,pBInfo]].map(([pid,pl])=>(
+                    <div key={pid}>
+                      <div style={{color:pl?.color,fontWeight:700}}>{pl?.avatar} {pl?.nickname}</div>
+                      <div style={{fontSize:12,color:"#666"}}>Fase: {pd.fases?.[pid]||"-"}</div>
+                      <div style={{fontSize:12,color:"#666"}}>Dados: {(pd.dados?.[pid]||[]).join(" | ")}</div>
+                      <div style={{fontSize:12,color:"#aaa"}}>
+                        Decisión R{pd.ronda}: {pd.decisiones?.[`${pd.ronda}_${pid}`]||"⏳"}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{marginTop:8,fontSize:12,color:"#a855f7"}}>
+                  Públicos: {(pd.publicos||[]).map((v,i)=>i<(pd.ronda||1)-1?v:"?").join(" | ")} · Ronda {pd.ronda}/4 · Pozo {pd.pot}
+                </div>
+                {pd.resultado && <div style={{marginTop:6,fontWeight:700,color:"#22c55e"}}>✓ {pd.resultado}</div>}
+              </Card>
+            );
+          })}
+          {phase==="finished" && (
+            <Card style={{textAlign:"center",padding:32}}>
+              <div style={{fontSize:48,marginBottom:8}}>🏆</div>
+              <h2 style={{color:"#22c55e"}}>Experimento completado</h2>
+              <p style={{color:"#666",fontSize:14}}>Descarga los datos en la pestaña Datos</p>
+            </Card>
+          )}
         </div>
       )}
 
-      {/* TAB: DATOS */}
-      {activeTab === "data" && (
+      {/* TAB PARTIDAS */}
+      {tab==="partidas" && (
+        <div style={{display:"flex",flexDirection:"column",gap:10}}>
+          {Array.from({length:config?.totalPartidas||5},(_,i)=>i+1).map(n=>{
+            const pd=partidas?.[n]||{};
+            const done=n<partidaActual;
+            const current=n===partidaActual;
+            return (
+              <Card key={n} accent={current?"#f97316":done?"#22c55e44":"#333"}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                  <div style={{fontWeight:700,color:current?"#f97316":done?"#22c55e":"#555"}}>
+                    Partida {n} {current&&"← actual"} {done&&"✓"}
+                  </div>
+                  <Badge color={current?"#f97316":done?"#22c55e":"#555"}>
+                    {current?"EN JUEGO":done?"COMPLETADA":"PENDIENTE"}
+                  </Badge>
+                </div>
+                {Object.entries(pd).map(([pk,d])=>(
+                  <div key={pk} style={{fontSize:12,color:"#666",marginTop:4}}>
+                    {(d.jugadores||[]).map(p=>players?.[p]?.nickname||p).join(" vs ")}
+                    {d.resultado&&<span style={{color:"#22c55e"}}> → {d.resultado}</span>}
+                  </div>
+                ))}
+              </Card>
+            );
+          })}
+        </div>
+      )}
+
+      {/* TAB DATOS */}
+      {tab==="datos" && (
         <div>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-            <div style={{ color: "#aaa", fontSize: 13 }}>{logs.length} eventos registrados</div>
-            <Btn onClick={exportCSV} variant="success" style={{ fontSize: 13, padding: "7px 16px" }}>⬇ Exportar CSV</Btn>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+            <span style={{color:"#aaa",fontSize:13}}>{logs.length} eventos</span>
+            <Btn onClick={exportCSV} variant="success" style={{fontSize:13,padding:"7px 16px"}}>⬇ Exportar CSV</Btn>
           </div>
           <Card>
-            <div style={{ overflowX: "auto" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, fontFamily: "monospace" }}>
+            <div style={{overflowX:"auto"}}>
+              <table style={{width:"100%",borderCollapse:"collapse",fontSize:11,fontFamily:"monospace"}}>
                 <thead>
-                  <tr>
-                    {["Mano","Jugador","Acción","Ronda","EV","Tiempo(ms)","Fase"].map(h => (
-                      <th key={h} style={{ color: "#666", padding: "6px 8px", textAlign: "left", borderBottom: "1px solid #333" }}>{h}</th>
-                    ))}
-                  </tr>
+                  <tr>{["Par","Jugador","Acción","Ronda","EV","Tiempo","Fase","Resultado"].map(h=>(
+                    <th key={h} style={{color:"#555",padding:"5px 8px",textAlign:"left",borderBottom:"1px solid #222"}}>{h}</th>
+                  ))}</tr>
                 </thead>
                 <tbody>
-                  {logs.slice(-50).reverse().map((l, i) => (
-                    <tr key={i} style={{ borderBottom: "1px solid #1a1a2a" }}>
-                      <td style={{ padding: "5px 8px", color: "#aaa" }}>{l.hand}</td>
-                      <td style={{ padding: "5px 8px", color: l.jugador === "A" ? "#3b82f6" : "#f97316", fontWeight: 700 }}>{l.jugador}</td>
-                      <td style={{ padding: "5px 8px", color: l.accion === "apostar" ? "#22c55e" : "#ef4444" }}>{l.accion}</td>
-                      <td style={{ padding: "5px 8px", color: "#aaa" }}>{l.ronda}</td>
-                      <td style={{ padding: "5px 8px", color: "#a855f7" }}>{(l.ev * 100).toFixed(0)}%</td>
-                      <td style={{ padding: "5px 8px", color: "#aaa" }}>{l.tiempo_ms}</td>
-                      <td style={{ padding: "5px 8px", color: "#aaa" }}>{l.fase}</td>
+                  {logs.slice(-60).reverse().map((l,i)=>(
+                    <tr key={i} style={{borderBottom:"1px solid #1a1a2a"}}>
+                      <td style={{padding:"4px 8px",color:"#555"}}>{l.pairKey}</td>
+                      <td style={{padding:"4px 8px",color:players?.[l.jugador]?.color||"#aaa",fontWeight:700}}>
+                        {players?.[l.jugador]?.nickname||l.jugador}
+                      </td>
+                      <td style={{padding:"4px 8px",color:l.accion==="apostar"?"#22c55e":"#ef4444"}}>{l.accion}</td>
+                      <td style={{padding:"4px 8px",color:"#aaa"}}>{l.ronda}</td>
+                      <td style={{padding:"4px 8px",color:"#a855f7"}}>{((l.ev||0)*100).toFixed(0)}%</td>
+                      <td style={{padding:"4px 8px",color:"#aaa"}}>{l.tiempo_ms}</td>
+                      <td style={{padding:"4px 8px",color:"#666"}}>{l.fase}</td>
+                      <td style={{padding:"4px 8px",color:"#22c55e"}}>{l.resultado||""}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
-              {!logs.length && <div style={{ color: "#444", padding: 20, textAlign: "center" }}>Sin datos aún</div>}
+              {!logs.length&&<div style={{color:"#444",padding:20,textAlign:"center"}}>Sin datos aún</div>}
             </div>
           </Card>
         </div>
       )}
 
-      {/* TAB: CONFIG */}
-      {activeTab === "config" && (
+      {/* TAB CONFIG */}
+      {tab==="config" && cfgLocal && (
         <Card accent="#a855f7">
-          <div style={{ fontSize: 12, color: "#aaa", marginBottom: 16 }}>CONFIGURACIÓN DE SALA</div>
+          <div style={{fontSize:12,color:"#666",marginBottom:16}}>CONFIGURACIÓN DE SALA</div>
 
-          <label style={{ color: "#aaa", fontSize: 13, display: "block", marginBottom: 6 }}>
-            Rondas por mano: <span style={{ color: "#f97316" }}>{newRounds}</span>
+          <label style={{color:"#888",fontSize:13,display:"flex",alignItems:"center",gap:10,marginBottom:14,cursor:"pointer"}}>
+            <input type="checkbox" checked={cfgLocal.showEV||false}
+              onChange={e=>setCfgLocal(c=>({...c,showEV:e.target.checked}))}
+              style={{accentColor:"#f97316",width:16,height:16}}/>
+            Mostrar barra de Ventaja Esperada (EV) a los jugadores
           </label>
-          <input
-            type="range" min={3} max={7} value={newRounds}
-            onChange={e => setNewRounds(+e.target.value)}
-            style={{ width: "100%", marginBottom: 12, accentColor: "#f97316" }}
-          />
-          <Btn onClick={updateRounds} variant="ghost" style={{ marginBottom: 20 }}>
-            Guardar rondas
+
+          <label style={{color:"#888",fontSize:13,display:"block",marginBottom:6}}>
+            Temporizador por ronda: <span style={{color:"#f97316"}}>
+              {cfgLocal.timerSecs===0?"Sin límite":`${cfgLocal.timerSecs}s`}
+            </span>
+          </label>
+          <input type="range" min={0} max={60} step={5} value={cfgLocal.timerSecs||0}
+            onChange={e=>setCfgLocal(c=>({...c,timerSecs:+e.target.value}))}
+            style={{width:"100%",marginBottom:20,accentColor:"#f97316"}}/>
+
+          <Btn onClick={saveConfig} variant="purple" style={{width:"100%",marginBottom:20}}>
+            Guardar configuración
           </Btn>
 
-          <hr style={{ border: "none", borderTop: "1px solid #222", margin: "16px 0" }} />
-          <div style={{ fontSize: 12, color: "#aaa", marginBottom: 8 }}>CÓDIGO DE SALA (compartir con jugadores)</div>
-          <div style={{
-            fontFamily: "monospace", fontSize: 28, letterSpacing: 8, color: "#f97316",
-            fontWeight: 900, background: "#0a0a0f", padding: "12px 20px", borderRadius: 10,
-            textAlign: "center", marginBottom: 16,
-          }}>{roomCode}</div>
-          <p style={{ color: "#555", fontSize: 12, margin: 0 }}>
-            Los jugadores deben ingresar este código en la pantalla de inicio y elegir su rol (A o B).
-          </p>
+          <hr style={{border:"none",borderTop:"1px solid #222",margin:"16px 0"}}/>
+          <div style={{fontSize:12,color:"#666",marginBottom:8}}>CÓDIGO PARA COMPARTIR</div>
+          <div style={{fontFamily:"monospace",fontSize:32,letterSpacing:8,color:"#f97316",
+            fontWeight:900,background:"#0a0a0f",padding:"12px 20px",borderRadius:10,textAlign:"center"}}>
+            {roomCode}
+          </div>
         </Card>
       )}
     </div>
@@ -623,422 +707,516 @@ function GestorScreen({ roomCode, password, profile }) {
 }
 
 // ─── PANTALLA: JUGADOR ────────────────────────────────────────────────────────
-function PlayerScreen({ roomCode, role, profile }) {
+function PlayerScreen({ roomCode, playerId, profile }) {
   const [room, setRoom] = useState(null);
-  const [waiting, setWaiting] = useState(false);
+  const [anim, setAnim] = useState(null); // "rolling"|"waiting"|"result"|"next"
+  const [animMsg, setAnimMsg] = useState("");
+  const [decidido, setDecidido] = useState(false);
+  const [timerLeft, setTimerLeft] = useState(null);
+  const timerRef = useRef(null);
+  const prevRondaRef = useRef(null);
+  const prevPartidaRef = useRef(null);
 
-  useEffect(() => {
-    const roomRef = ref(db, `rooms/${roomCode}`);
-    const unsub = onValue(roomRef, snap => {
-      if (snap.exists()) setRoom(snap.val());
-    });
-    return () => off(roomRef);
-  }, [roomCode]);
+  useEffect(()=>{
+    const r=ref(db,`rooms/${roomCode}`);
+    const unsub=onValue(r,snap=>{ if(snap.exists()) setRoom(snap.val()); });
+    return ()=>off(r);
+  },[roomCode]);
 
-  const logEvent = async (accion, ev) => {
-    const s = room.state;
-    const logRef = push(ref(db, `rooms/${roomCode}/logs`));
-    await set(logRef, {
-      hand: s.hand || 0,
-      jugador: role,
-      accion,
-      ronda: s.ronda,
-      ev,
-      tiempo_ms: Date.now() - (s.inicio_turno || Date.now()),
-      fase: room.config?.fase || "control",
-      ts: Date.now(),
-    });
-  };
+  // Detectar cambio de ronda → animación
+  useEffect(()=>{
+    if (!room) return;
+    const status=room.status||{};
+    const n=status.partidaActual||0;
+    const myPair=getMyPair(room,n);
+    if (!myPair) return;
+    const ronda=myPair.ronda||1;
 
-  const apostar = async () => {
-    if (waiting) return;
-    setWaiting(true);
-    const s = room.state;
-    const bal = room.balance?.[role] || 0;
-    if (bal <= 0) { setWaiting(false); return; }
-    const myDice = s[`${role}_dados`] || [];
-    const visibleMesa = (s.mesa || []).slice(0, Math.max(0, s.ronda - 1));
-    const ev = calcEV([...myDice, ...visibleMesa]);
-    await logEvent("apostar", ev);
-    const updates = {
-      [`balance/${role}`]: bal - 1,
-      "state/pot": (s.pot || 0) + 1,
-      "state/inicio_turno": Date.now(),
-    };
-    // Avanzar turno
-    const otherRole = role === "A" ? "B" : "A";
-    if (s.turno === role) {
-      // Determinar si ambos ya jugaron esta ronda
-      updates["state/turno"] = otherRole;
-      // Si el otro ya se fue / terminó la ronda, pasar ronda
-      // Lógica simple: siempre alternar
-      if (s.ronda >= (room.config?.rounds || 5) && s.turno === "B") {
-        await evalFinal(updates);
-      } else {
-        await update(ref(db, `rooms/${roomCode}`), updates);
-        // Verificar si avanzar ronda (cuando B termina su turno)
-        if (role === "B") {
-          const nextRonda = s.ronda + 1;
-          if (nextRonda > (room.config?.rounds || 5)) {
-            await evalFinal({});
-          } else {
-            await update(ref(db, `rooms/${roomCode}/state`), { ronda: nextRonda, turno: "A" });
-          }
-        }
+    if (prevRondaRef.current!==null && ronda!==prevRondaRef.current) {
+      setDecidido(false);
+      if (ronda<=3) {
+        setAnim("rolling");
+        setAnimMsg(ronda===1?"🎲 ¡Tus dados han sido lanzados!":ronda===2?"🌐 Se revela el primer dado público":"🌐 Se revela el segundo dado público");
+        setTimeout(()=>setAnim(null),1800);
       }
     }
-    setWaiting(false);
-  };
-
-  const retirarse = async () => {
-    if (waiting) return;
-    setWaiting(true);
-    const s = room.state;
-    const myDice = s[`${role}_dados`] || [];
-    const visibleMesa = (s.mesa || []).slice(0, Math.max(0, s.ronda - 1));
-    const ev = calcEV([...myDice, ...visibleMesa]);
-    await logEvent("retirarse", ev);
-    const winner = role === "A" ? "B" : "A";
-    await finalizarMano(winner, `Retirada ${role}`);
-    setWaiting(false);
-  };
-
-  const evalFinal = async (extraUpdates = {}) => {
-    const s = room.state;
-    const scoreA = (s.A_dados || []).reduce((a, b) => a + b, 0) + (s.mesa || []).reduce((a, b) => a + b, 0);
-    const scoreB = (s.B_dados || []).reduce((a, b) => a + b, 0) + (s.mesa || []).reduce((a, b) => a + b, 0);
-    // Check tres unos
-    const allA = [...(s.A_dados || []), ...(s.mesa || [])];
-    const allB = [...(s.B_dados || []), ...(s.mesa || [])];
-    const tresunosA = allA.filter(v => v === 1).length >= 3;
-    const tresunosB = allB.filter(v => v === 1).length >= 3;
-    if (tresunosA && !tresunosB) { await finalizarMano("A", "Tres unos"); return; }
-    if (tresunosB && !tresunosA) { await finalizarMano("B", "Tres unos"); return; }
-    if (scoreA > scoreB) await finalizarMano("A", "Mayor suma");
-    else if (scoreB > scoreA) await finalizarMano("B", "Mayor suma");
-    else await finalizarMano("Casa", "Empate");
-  };
-
-  const finalizarMano = async (ganador, motivo) => {
-    const s = room.state;
-    const pot = s.pot || 0;
-    const balA = room.balance?.A || 0;
-    const balB = room.balance?.B || 0;
-    let newBalA = balA, newBalB = balB;
-    let msgA = "", msgB = "", msg = "";
-
-    if (ganador === "A") {
-      newBalA = balA + pot;
-      msgA = `🏆 Ganaste ${pot} fichas (${motivo})`;
-      msgB = motivo.includes("Retirada") ? "Perdiste por retiro" : `Perdiste ${pot} fichas`;
-      msg = `🏆 Ganó Jugador A — ${motivo}`;
-    } else if (ganador === "B") {
-      newBalB = balB + pot;
-      msgB = `🏆 Ganaste ${pot} fichas (${motivo})`;
-      msgA = motivo.includes("Retirada") ? "Perdiste por retiro" : `Perdiste ${pot} fichas`;
-      msg = `🏆 Ganó Jugador B — ${motivo}`;
-    } else {
-      const half = Math.floor(pot / 2);
-      newBalA = balA + half;
-      newBalB = balB + half;
-      msgA = msgB = "Empate — pozo dividido";
-      msg = "🤝 Empate — la casa lleva el resto";
+    if (prevPartidaRef.current!==null && n!==prevPartidaRef.current) {
+      setDecidido(false);
     }
+    prevRondaRef.current=ronda;
+    prevPartidaRef.current=n;
+  },[room]);
 
-    // Log resultado
-    const logRef = push(ref(db, `rooms/${roomCode}/logs`));
-    await set(logRef, {
-      hand: s.hand || 0,
-      jugador: ganador,
-      accion: "resultado",
-      ronda: s.ronda,
-      ev: 0,
-      tiempo_ms: 0,
-      fase: room.config?.fase || "control",
-      resultado: ganador,
-      motivo,
-      ts: Date.now(),
+  // Timer
+  useEffect(()=>{
+    if (!room) return;
+    const timerSecs=room.config?.timerSecs||0;
+    if (!timerSecs) { setTimerLeft(null); return; }
+    const myPair=getMyPair(room,room.status?.partidaActual||0);
+    if (!myPair||myPair.resultado) { setTimerLeft(null); return; }
+    const elapsed=Math.floor((Date.now()-(myPair.startedAt||Date.now()))/1000);
+    const left=Math.max(0,timerSecs-elapsed);
+    setTimerLeft(left);
+    clearInterval(timerRef.current);
+    timerRef.current=setInterval(()=>setTimerLeft(l=>Math.max(0,(l||0)-1)),1000);
+    return ()=>clearInterval(timerRef.current);
+  },[room?.status?.partidaActual, room?.config?.timerSecs]);
+
+  const getMyPair = (r,n) => {
+    const partidas=r?.partidas?.[n]||{};
+    return Object.values(partidas).find(p=>(p.jugadores||[]).includes(playerId))||null;
+  };
+
+  const decidir = async (accion) => {
+    if (decidido) return;
+    const n=room.status?.partidaActual||0;
+    const partidas=room.partidas?.[n]||{};
+    const pairKey=Object.keys(partidas).find(k=>(partidas[k].jugadores||[]).includes(playerId));
+    if (!pairKey) return;
+    const pd=partidas[pairKey];
+    const ronda=pd.ronda||1;
+    const myDice=pd.dados?.[playerId]||[];
+    const pubVisible=(pd.publicos||[]).slice(0,ronda-1);
+    const ev=calcEV([...myDice,...pubVisible]);
+    const tiempo=Date.now()-(pd.startedAt||Date.now());
+
+    setDecidido(true);
+    setAnim("waiting");
+    setAnimMsg("Esperando al otro jugador…");
+
+    const decKey=`${ronda}_${playerId}`;
+    await update(ref(db,`rooms/${roomCode}/partidas/${n}/${pairKey}/decisiones`),{[decKey]:accion});
+
+    // Log
+    const logRef=push(ref(db,`rooms/${roomCode}/logs`));
+    const rival=(pd.jugadores||[]).find(j=>j!==playerId);
+    const fase=pd.fases?.[playerId]||"control";
+    await set(logRef,{
+      partida:n, pairKey, jugador:playerId, rival,
+      accion, ronda, ev, tiempo_ms:tiempo, fase,
+      suma_propia:myDice.reduce((a,b)=>a+b,0),
+      suma_publica:pubVisible.reduce((a,b)=>a+b,0),
+      resultado:null, ts:Date.now(),
     });
 
-    await update(ref(db, `rooms/${roomCode}`), {
-      "balance/A": newBalA,
-      "balance/B": newBalB,
-      "state/finalizado": true,
-      "state/msg": msg,
-      "state/resultado_A": msgA,
-      "state/resultado_B": msgB,
+    // Verificar si ambos decidieron
+    const rival_=(pd.jugadores||[]).find(j=>j!==playerId);
+    const rivalDec=pd.decisiones?.[`${ronda}_${rival_}`];
+    const myDec=accion;
+
+    if (rivalDec) {
+      setAnim(null);
+      await resolveRonda(n, pairKey, pd, ronda, playerId, myDec, rival_, rivalDec);
+    }
+  };
+
+  const resolveRonda = async (n,pairKey,pd,ronda,pidA,decA,pidB,decB)=>{
+    // Retirada de cualquiera
+    if (decA==="retirarse"||decB==="retirarse") {
+      const ganador=decA==="retirarse"?pidB:pidA;
+      await finalizarPartida(n,pairKey,pd,ganador,"Retirada");
+      return;
+    }
+    // Ambos apostaron
+    const pot=(pd.pot||2)+2; // cada uno apuesta 1
+    await update(ref(db,`rooms/${roomCode}`),{
+      [`balance/${pidA}`]:(room.balance?.[pidA]||10)-1,
+      [`balance/${pidB}`]:(room.balance?.[pidB]||10)-1,
+    });
+    if (ronda>=3) {
+      // Evaluar ganador
+      const dA=pd.dados?.[pidA]||[]; const dB=pd.dados?.[pidB]||[];
+      const pub=pd.publicos||[];
+      const sA=dA.reduce((a,b)=>a+b,0)+pub.reduce((a,b)=>a+b,0);
+      const sB=dB.reduce((a,b)=>a+b,0)+pub.reduce((a,b)=>a+b,0);
+      const tresunosA=[...dA,...pub].filter(v=>v===1).length>=3;
+      const tresunosB=[...dB,...pub].filter(v=>v===1).length>=3;
+      let ganador;
+      if (tresunosA&&!tresunosB) ganador=pidA;
+      else if (tresunosB&&!tresunosA) ganador=pidB;
+      else if (sA>sB) ganador=pidA;
+      else if (sB>sA) ganador=pidB;
+      else ganador="empate";
+      await update(ref(db,`rooms/${roomCode}/partidas/${n}/${pairKey}`),{pot,ronda:4});
+      await finalizarPartida(n,pairKey,{...pd,pot},ganador,"Suma final");
+    } else {
+      await update(ref(db,`rooms/${roomCode}/partidas/${n}/${pairKey}`),{
+        pot, ronda:ronda+1, startedAt:Date.now(), decisiones:{},
+      });
+    }
+  };
+
+  const finalizarPartida = async (n,pairKey,pd,ganador,motivo)=>{
+    const [p1,p2]=pd.jugadores||[];
+    const pot=pd.pot||2;
+    let b1=room.balance?.[p1]||10, b2=room.balance?.[p2]||10;
+    let res;
+    if (ganador==="empate") {
+      b1+=Math.floor(pot/2); b2+=Math.floor(pot/2);
+      res="Empate";
+    } else {
+      if (ganador===p1) b1+=pot; else b2+=pot;
+      const gNick=room.players?.[ganador]?.nickname||ganador;
+      res=`Ganó ${gNick} (${motivo})`;
+    }
+    await update(ref(db,`rooms/${roomCode}`),{
+      [`balance/${p1}`]:b1, [`balance/${p2}`]:b2,
+      [`partidas/${n}/${pairKey}/resultado`]:res,
+      [`partidas/${n}/${pairKey}/ronda`]:4,
+    });
+    // Actualizar log resultado
+    const logRef=push(ref(db,`rooms/${roomCode}/logs`));
+    await set(logRef,{
+      partida:n,pairKey,jugador:ganador,accion:"resultado",
+      ronda:4,ev:0,tiempo_ms:0,fase:pd.fases?.[ganador]||"control",
+      resultado:res,ts:Date.now(),
     });
   };
 
-  if (!room) return <div style={{ color: "#666", padding: 40, textAlign: "center" }}>Conectando…</div>;
+  // ── RENDER ──
+  if (!room) return <Loading msg="Conectando…"/>;
+  const {config,status,players,balance}=room;
+  const phase=status?.phase||"lobby";
+  const n=status?.partidaActual||0;
+  const myPair=getMyPair(room,n);
+  const myBalance=balance?.[playerId]??10;
+  const myColor=profile?.color||"#f97316";
 
-  const { state, balance, config, players } = room;
-  const s = state || {};
-  const fase = config?.fase || "control";
-  const myDice = s[`${role}_dados`] || [0, 0];
-  const otherRole = role === "A" ? "B" : "A";
-  const otherPlayer = players?.[otherRole];
-  const myBalance = balance?.[role] ?? 10;
-  const myColor = profile?.color || (role === "A" ? "#3b82f6" : "#f97316");
-  const myTurn = s.turno === role && !s.finalizado;
+  // Datos de la partida actual
+  let rival_,myDice=[],pubDice=[],pot=0,ronda=1,resultado=null,fase="control",canCheat=false,rivalDice=[];
+  if (myPair) {
+    rival_=(myPair.jugadores||[]).find(j=>j!==playerId);
+    myDice=myPair.dados?.[playerId]||[];
+    const pubAll=myPair.publicos||[];
+    ronda=myPair.ronda||1;
+    pubDice=pubAll.map((v,i)=>({value:v,visible:i<ronda-1}));
+    pot=myPair.pot||0;
+    resultado=myPair.resultado||null;
+    fase=myPair.fases?.[playerId]||"control";
+    canCheat=fase==="yo_trampo"||fase==="ambos";
+    rivalDice=myPair.dados?.[rival_]||[];
+  }
+  const rivalInfo=players?.[rival_];
+  const myDiceSum=myDice.reduce((a,b)=>a+b,0);
+  const pubSum=pubDice.filter(d=>d.visible).map(d=>d.value).reduce((a,b)=>a+b,0);
+  const totalVisible=myDiceSum+pubSum;
+  const ev=myDice.length?calcEV([...myDice,...pubDice.filter(d=>d.visible).map(d=>d.value)]):0;
+  const yaDecidio=decidido||(myPair&&myPair.decisiones?.[`${ronda}_${playerId}`]);
+  const rivalYaDecidio=myPair&&myPair.decisiones?.[`${ronda}_${rival_}`];
 
-  // Trampa: ¿puede ver un dado del rival?
-  const canCheat = fase === `${role}_pos` || fase === "ambos";
-  const otherDice = s[`${otherRole}_dados`] || [0, 0];
-
-  // Mesa visible según ronda
-  const totalRounds = config?.rounds || 5;
-  const visibleMesaCount = Math.max(0, (s.ronda || 1) - 1);
-  const mesa = (s.mesa || []);
-
-  // EV
-  const visibleMesa = mesa.slice(0, visibleMesaCount);
-  const ev = myDice[0] ? calcEV([...myDice, ...visibleMesa]) : 0;
-
-  if (!config?.open) {
+  if (phase==="lobby" || phase==="finished") {
     return (
-      <div style={{ maxWidth: 440, margin: "0 auto", padding: "60px 20px", textAlign: "center" }}>
-        <div style={{ fontSize: 64, marginBottom: 16 }}>⏳</div>
-        <h2 style={{ color: "#f97316" }}>Esperando al gestor…</h2>
-        <p style={{ color: "#666" }}>La sala aún no está abierta.</p>
-        <Card style={{ marginTop: 20 }}>
-          <div style={{ fontSize: 28 }}>{profile?.avatar}</div>
-          <div style={{ color: profile?.color, fontWeight: 700, marginTop: 4 }}>{profile?.nickname}</div>
-          <div style={{ color: "#666", fontSize: 13 }}>Jugador {role} · Sala {roomCode}</div>
+      <div style={{maxWidth:420,margin:"0 auto",padding:"40px 20px",textAlign:"center"}}>
+        <div style={{fontSize:64,marginBottom:16,animation:"float 3s ease-in-out infinite",display:"inline-block"}}>
+          {phase==="finished"?"🏆":"🎃"}
+        </div>
+        <h2 style={{color:phase==="finished"?"#22c55e":"#f97316"}}>
+          {phase==="finished"?"¡Experimento terminado!":"Esperando al gestor…"}
+        </h2>
+        <Card style={{marginTop:20}}>
+          <div style={{fontSize:36}}>{profile?.avatar}</div>
+          <div style={{color:myColor,fontWeight:700,fontSize:18,marginTop:6}}>{profile?.nickname}</div>
+          <div style={{color:"#555",fontSize:13}}>Sala {roomCode}</div>
+          <div style={{marginTop:12,fontSize:22,fontWeight:900,color:"#f97316"}}>💰 {myBalance} fichas</div>
+        </Card>
+      </div>
+    );
+  }
+
+  if (!myPair) {
+    return (
+      <div style={{maxWidth:420,margin:"0 auto",padding:"60px 20px",textAlign:"center"}}>
+        <div style={{fontSize:48,animation:"pulse 1.5s infinite",display:"inline-block"}}>⏳</div>
+        <p style={{color:"#666",marginTop:16}}>Esperando emparejamiento…</p>
+      </div>
+    );
+  }
+
+  if (resultado) {
+    const gane=resultado.includes(profile?.nickname||"");
+    const empate=resultado.includes("Empate");
+    return (
+      <div style={{maxWidth:420,margin:"0 auto",padding:"24px 16px"}}>
+        <AnimOverlay show={true}>
+          <Card style={{maxWidth:340,textAlign:"center",padding:40,animation:"fadeIn 0.3s ease"}}>
+            <div style={{fontSize:72,marginBottom:12}}>
+              {empate?"🤝":gane?"🏆":"💀"}
+            </div>
+            <h2 style={{color:empate?"#aaa":gane?"#22c55e":"#ef4444",marginBottom:8}}>
+              {empate?"¡Empate!":gane?"¡Ganaste!":"¡Perdiste!"}
+            </h2>
+            <p style={{color:"#888",fontSize:13,marginBottom:16}}>{resultado}</p>
+            <div style={{fontSize:22,fontWeight:900,color:"#f97316",marginBottom:20}}>
+              💰 {myBalance} fichas
+            </div>
+            <div style={{fontSize:12,color:"#555",marginBottom:4}}>Mis dados: {myDice.join(" + ")} = {myDiceSum}</div>
+            <div style={{fontSize:12,color:"#555"}}>Dados públicos: {(myPair.publicos||[]).join(" + ")} = {(myPair.publicos||[]).reduce((a,b)=>a+b,0)}</div>
+            <div style={{fontSize:13,color:"#888",marginTop:8}}>Total: {myDiceSum+(myPair.publicos||[]).reduce((a,b)=>a+b,0)}</div>
+            <Btn onClick={()=>setAnim(null)} variant="ghost" style={{marginTop:20,width:"100%"}}>
+              Ver pantalla
+            </Btn>
+          </Card>
+        </AnimOverlay>
+
+        <PlayerHeader profile={profile} balance={myBalance} roomCode={roomCode} partida={n} totalPartidas={config?.totalPartidas}/>
+        <Card style={{marginTop:12,textAlign:"center",padding:32}}>
+          <div style={{fontSize:14,color:"#666"}}>Partida {n} finalizada</div>
+          <div style={{fontSize:13,color:"#555",marginTop:4}}>Espera al gestor para continuar</div>
         </Card>
       </div>
     );
   }
 
   return (
-    <div style={{ maxWidth: 440, margin: "0 auto", padding: "20px 16px" }}>
-      {/* Header jugador */}
-      <Card accent={myColor} style={{ marginBottom: 12 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div>
-            <span style={{ fontSize: 28 }}>{profile?.avatar} </span>
-            <span style={{ color: myColor, fontWeight: 700, fontSize: 18 }}>{profile?.nickname}</span>
-            <div style={{ color: "#666", fontSize: 12 }}>Jugador {role}</div>
+    <div style={{maxWidth:420,margin:"0 auto",padding:"16px 16px 80px"}}>
+      {/* Animación overlay */}
+      <AnimOverlay show={anim==="rolling"}>
+        <div style={{textAlign:"center",animation:"fadeIn 0.2s ease"}}>
+          <div style={{fontSize:80,animation:"shakeDie 0.4s ease infinite",display:"inline-block"}}>🎲</div>
+          <div style={{color:"#f97316",fontWeight:700,fontSize:18,marginTop:12}}>{animMsg}</div>
+        </div>
+      </AnimOverlay>
+
+      <AnimOverlay show={anim==="waiting"}>
+        <div style={{textAlign:"center"}}>
+          <div style={{fontSize:48,animation:"pulse 1s infinite",display:"inline-block"}}>⏳</div>
+          <div style={{color:"#aaa",fontSize:16,marginTop:12}}>{animMsg}</div>
+        </div>
+      </AnimOverlay>
+
+      <PlayerHeader profile={profile} balance={myBalance} roomCode={roomCode} partida={n} totalPartidas={config?.totalPartidas}/>
+
+      {/* Timer */}
+      {timerLeft!==null && (
+        <div style={{textAlign:"center",margin:"8px 0"}}>
+          <span style={{
+            fontFamily:"monospace",fontSize:20,fontWeight:900,
+            color:timerLeft<=5?"#ef4444":"#aaa",
+          }}>{timerLeft}s</span>
+        </div>
+      )}
+
+      {/* Ronda */}
+      <div style={{display:"flex",gap:8,marginBottom:10}}>
+        {[1,2,3,4].map(r=>(
+          <div key={r} style={{flex:1,textAlign:"center",padding:"8px 4px",borderRadius:10,
+            background:ronda>r?"#22c55e22":ronda===r?"#f9731622":"#1e1e2e",
+            border:`1px solid ${ronda>r?"#22c55e44":ronda===r?"#f97316":"#2a2a3a"}`,
+          }}>
+            <div style={{fontSize:10,color:"#555"}}>R{r}</div>
+            <div style={{fontSize:11,fontWeight:700,color:ronda>r?"#22c55e":ronda===r?"#f97316":"#333"}}>
+              {r===1?"Dados":r===2?"Pub1":r===3?"Pub2":"Final"}
+            </div>
           </div>
-          <div style={{ textAlign: "right" }}>
-            <div style={{ fontSize: 22, fontWeight: 900, color: "#f97316" }}>💰 {myBalance}</div>
-            <div style={{ fontSize: 11, color: "#666" }}>fichas</div>
-          </div>
+        ))}
+      </div>
+
+      {/* Mis dados */}
+      <Card accent={myColor} style={{marginBottom:10}}>
+        <div style={{fontSize:11,color:"#666",marginBottom:8}}>TUS DADOS</div>
+        <DiceRow dice={myDice.length?myDice:[1,1]} hidden={myDice.length===0} size={58} color={myColor} shake={anim==="rolling"}/>
+        <div style={{marginTop:12,display:"flex",justifyContent:"center",gap:8,alignItems:"center"}}>
+          <span style={{color:"#666",fontSize:13}}>Suma:</span>
+          {myDice.map((v,i)=>(
+            <span key={i} style={{color:myColor,fontWeight:700}}>{v}</span>
+          )).reduce((acc,el,i)=>i===0?[el]:[...acc,<span key={`p${i}`} style={{color:"#444"}}>+</span>,el],[])}
+          {pubDice.filter(d=>d.visible).map((d,i)=>(
+            <span key={`pub${i}`} style={{color:"#22c55e",fontWeight:700}}>+{d.value}</span>
+          ))}
+          <span style={{color:"#fff",fontWeight:900,fontSize:18}}>=&nbsp;{totalVisible}</span>
+        </div>
+        {config?.showEV && <div style={{marginTop:10}}><EVBar value={ev} label="Ventaja esperada" color={myColor}/></div>}
+      </Card>
+
+      {/* Mesa pública */}
+      <Card accent="#22c55e" style={{marginBottom:10}}>
+        <div style={{fontSize:11,color:"#666",marginBottom:8}}>DADOS PÚBLICOS</div>
+        <div style={{display:"flex",gap:10,justifyContent:"center"}}>
+          {pubDice.map((d,i)=>(
+            <Die key={i} value={d.value} hidden={!d.visible} size={52} color="#22c55e" glow={d.visible}/>
+          ))}
         </div>
       </Card>
 
-      {s.finalizado || !s.ronda ? (
-        /* Esperando nueva mano */
-        <Card style={{ textAlign: "center", padding: 40 }}>
-          {s.resultado_A || s.resultado_B ? (
-            <>
-              <div style={{ fontSize: 48, marginBottom: 8 }}>
-                {(role === "A" ? s.resultado_A : s.resultado_B)?.includes("Ganaste") ? "🏆" : "💔"}
-              </div>
-              <div style={{
-                fontSize: 18, fontWeight: 700,
-                color: (role === "A" ? s.resultado_A : s.resultado_B)?.includes("Ganaste") ? "#22c55e" : "#ef4444",
-              }}>
-                {role === "A" ? s.resultado_A : s.resultado_B}
-              </div>
-              <div style={{ color: "#666", fontSize: 13, marginTop: 8 }}>{s.msg}</div>
-            </>
-          ) : (
-            <>
-              <div style={{ fontSize: 48, marginBottom: 8 }}>🎃</div>
-              <div style={{ color: "#666" }}>Esperando nueva mano…</div>
-            </>
-          )}
-        </Card>
-      ) : (
-        <>
-          {/* Ronda y turno */}
-          <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-            <Card style={{ flex: 1, padding: "10px 14px", textAlign: "center" }}>
-              <div style={{ fontSize: 11, color: "#666" }}>RONDA</div>
-              <div style={{ fontSize: 20, fontWeight: 900, color: "#f97316" }}>{s.ronda}/{totalRounds}</div>
-            </Card>
-            <Card style={{ flex: 1, padding: "10px 14px", textAlign: "center" }}>
-              <div style={{ fontSize: 11, color: "#666" }}>POZO</div>
-              <div style={{ fontSize: 20, fontWeight: 900, color: "#a855f7" }}>🏆 {s.pot}</div>
-            </Card>
-            <Card style={{ flex: 1, padding: "10px 14px", textAlign: "center",
-              background: myTurn ? "#f9731611" : "#12121e",
-              border: `1px solid ${myTurn ? "#f97316" : "#333"}`,
-            }}>
-              <div style={{ fontSize: 11, color: "#666" }}>TURNO</div>
-              <div style={{ fontSize: 14, fontWeight: 900, color: myTurn ? "#f97316" : "#666" }}>
-                {myTurn ? "¡TÚ!" : `J.${s.turno}`}
-              </div>
-            </Card>
+      {/* Rival + trampa */}
+      <Card accent={canCheat?"#eab308":"#2a2a3a"} style={{marginBottom:10}}>
+        <div style={{fontSize:11,color:canCheat?"#eab308":"#555",marginBottom:8}}>
+          {canCheat?"🃏 VES UN DADO DEL RIVAL":"RIVAL"}
+        </div>
+        {rivalInfo&&(
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+            <span style={{fontSize:22}}>{rivalInfo.avatar}</span>
+            <span style={{color:rivalInfo.color,fontWeight:700}}>{rivalInfo.nickname}</span>
+            {rivalYaDecidio&&<Badge color="#22c55e">✓ Decidió</Badge>}
           </div>
+        )}
+        <div style={{display:"flex",gap:10,justifyContent:"center"}}>
+          <Die value={rivalDice[0]} hidden={!canCheat} size={48} color="#eab308" glow={canCheat}/>
+          <Die value={rivalDice[1]} hidden={true} size={48}/>
+        </div>
+      </Card>
 
-          {/* Tus dados */}
-          <Card accent={myColor} style={{ marginBottom: 12 }}>
-            <div style={{ fontSize: 12, color: "#aaa", marginBottom: 10 }}>TUS DADOS</div>
-            <DiceRow dice={myDice} size={56} color={myColor} />
-            <div style={{ marginTop: 12 }}>
-              <EVBar value={ev} label="Tu ventaja esperada" color={myColor} />
+      {/* Pozo */}
+      <div style={{textAlign:"center",margin:"10px 0",color:"#a855f7",fontWeight:700,fontSize:16}}>
+        🏆 Pozo: {pot} fichas
+      </div>
+
+      {/* Acciones */}
+      {ronda<=3 && !resultado && (
+        yaDecidio ? (
+          <Card style={{textAlign:"center",padding:20,background:"#1a1a2a"}}>
+            <div style={{color:"#666",fontSize:13,animation:"pulse 1.5s infinite"}}>
+              ⏳ Esperando al otro jugador…
             </div>
           </Card>
+        ) : (
+          <div style={{display:"flex",gap:10,marginTop:4}}>
+            <Btn onClick={()=>decidir("apostar")} variant="success"
+              style={{flex:1,fontSize:16,padding:"14px 0",borderRadius:12}}>
+              💰 Apostar +1
+            </Btn>
+            <Btn onClick={()=>decidir("retirarse")} variant="danger"
+              style={{flex:1,fontSize:16,padding:"14px 0",borderRadius:12}}>
+              🏳 Retirarse
+            </Btn>
+          </div>
+        )
+      )}
 
-          {/* Mesa pública */}
-          <Card accent="#22c55e" style={{ marginBottom: 12 }}>
-            <div style={{ fontSize: 12, color: "#aaa", marginBottom: 10 }}>MESA PÚBLICA</div>
-            <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap" }}>
-              {mesa.map((v, i) => (
-                <Die key={i} value={v} hidden={i >= visibleMesaCount} size={48} color="#22c55e" glow={i < visibleMesaCount} />
-              ))}
-            </div>
-          </Card>
-
-          {/* Info rival */}
-          <Card accent={canCheat ? "#eab308" : "#333"} style={{ marginBottom: 12 }}>
-            <div style={{ fontSize: 12, color: canCheat ? "#eab308" : "#666", marginBottom: 10 }}>
-              {canCheat ? "🃏 VENTAJA: VES UN DADO DEL RIVAL" : "RIVAL"}
-            </div>
-            {otherPlayer && (
-              <div style={{ fontSize: 13, color: "#aaa", marginBottom: 8 }}>
-                {otherPlayer.avatar} <span style={{ color: otherPlayer.color }}>{otherPlayer.nickname}</span>
-              </div>
-            )}
-            <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
-              <Die value={otherDice[0]} hidden={!canCheat} size={48} color="#eab308" glow={canCheat} />
-              <Die value={otherDice[1]} hidden={true} size={48} />
-            </div>
-          </Card>
-
-          {/* Acciones */}
-          {myTurn && (
-            <div style={{ display: "flex", gap: 10 }}>
-              <Btn
-                onClick={apostar}
-                disabled={waiting || myBalance <= 0}
-                variant="success"
-                style={{ flex: 1, fontSize: 16, padding: "14px 0" }}
-              >
-                💰 Apostar (+1)
-              </Btn>
-              <Btn
-                onClick={retirarse}
-                disabled={waiting}
-                variant="danger"
-                style={{ flex: 1, fontSize: 16, padding: "14px 0" }}
-              >
-                🏳 Retirarse
-              </Btn>
-            </div>
-          )}
-
-          {!myTurn && !s.finalizado && (
-            <Card style={{ textAlign: "center", padding: 20 }}>
-              <div style={{ color: "#666", fontSize: 14 }}>
-                ⏳ Esperando al Jugador {s.turno}…
-              </div>
-            </Card>
-          )}
-        </>
+      {ronda>=4 && !resultado && (
+        <Card style={{textAlign:"center",padding:20}}>
+          <div style={{color:"#666",fontSize:13,animation:"pulse 1.5s infinite"}}>⏳ Calculando resultado…</div>
+        </Card>
       )}
     </div>
   );
 }
 
-// ─── FLUJO DE ROLES AL UNIRSE ─────────────────────────────────────────────────
+function PlayerHeader({ profile, balance, roomCode, partida, totalPartidas }) {
+  return (
+    <Card accent={profile?.color} style={{marginBottom:10}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <span style={{fontSize:28}}>{profile?.avatar}</span>
+          <div>
+            <div style={{color:profile?.color,fontWeight:700,fontSize:16}}>{profile?.nickname}</div>
+            <div style={{color:"#555",fontSize:11}}>Sala {roomCode} · Partida {partida}/{totalPartidas}</div>
+          </div>
+        </div>
+        <div style={{textAlign:"right"}}>
+          <div style={{fontSize:22,fontWeight:900,color:"#f97316"}}>💰 {balance}</div>
+          <div style={{fontSize:10,color:"#555"}}>fichas</div>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function Loading({ msg }) {
+  return (
+    <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
+      minHeight:"60vh",color:"#666",gap:16}}>
+      <div style={{fontSize:40,animation:"spin 1s linear infinite",display:"inline-block"}}>⚙️</div>
+      <div>{msg}</div>
+    </div>
+  );
+}
+
+// ─── FLUJO DE UNIRSE ──────────────────────────────────────────────────────────
 function JoinFlow({ roomCode, onBack }) {
-  const [step, setStep] = useState("role"); // role | password | profile | play
+  const [step, setStep] = useState("role");
   const [role, setRole] = useState(null);
-  const [password, setPassword] = useState("");
+  const [pw, setPw] = useState("");
   const [profile, setProfile] = useState(null);
-  const [pwError, setPwError] = useState("");
+  const [pwErr, setPwErr] = useState("");
 
-  const chooseRole = (r) => { setRole(r); setStep(r === "gestor" ? "password" : "profile"); };
-
-  const checkPassword = async () => {
-    const snap = await get(ref(db, `rooms/${roomCode}/password`));
-    if (snap.val() === password) setStep("profile");
-    else setPwError("Contraseña incorrecta");
+  const checkPw = async ()=>{
+    const snap=await get(ref(db,`rooms/${roomCode}/password`));
+    if(snap.val()===pw) setStep("profile");
+    else setPwErr("Contraseña incorrecta");
   };
 
-  if (step === "role") return (
-    <div style={{ maxWidth: 440, margin: "0 auto", padding: "40px 20px" }}>
-      <button onClick={onBack} style={{ background: "none", border: "none", color: "#666", cursor: "pointer", marginBottom: 20 }}>← Volver</button>
-      <div style={{ textAlign: "center", marginBottom: 8 }}>
-        <div style={{ fontSize: 11, color: "#666", fontFamily: "monospace" }}>SALA</div>
-        <div style={{ fontSize: 28, fontWeight: 900, color: "#f97316", fontFamily: "monospace", letterSpacing: 4 }}>{roomCode}</div>
+  const chooseRole=(r)=>{ setRole(r); setStep(r==="gestor"?"pw":"profile"); };
+
+  // Generar ID único para jugadores (no gestor)
+  const getPlayerId = (r, prof) => {
+    if (r==="gestor") return "gestor";
+    // Usar nickname como ID (simplificado; en prod usar UUID)
+    return prof?.nickname?.toLowerCase().replace(/\s+/g,"")||r;
+  };
+
+  if (step==="role") return (
+    <div style={{maxWidth:420,margin:"0 auto",padding:"40px 20px"}}>
+      <button onClick={onBack} style={{background:"none",border:"none",color:"#666",cursor:"pointer",marginBottom:20,fontSize:14}}>
+        ← Volver
+      </button>
+      <div style={{textAlign:"center",marginBottom:24}}>
+        <div style={{fontSize:11,color:"#555",fontFamily:"monospace"}}>SALA</div>
+        <div style={{fontSize:28,fontWeight:900,color:"#f97316",fontFamily:"monospace",letterSpacing:4}}>{roomCode}</div>
       </div>
-      <h2 style={{ color: "#fff", marginBottom: 20 }}>¿Quién eres?</h2>
-      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      <h2 style={{color:"#fff",marginBottom:16}}>¿Quién eres?</h2>
+      <div style={{display:"flex",flexDirection:"column",gap:10}}>
         {[
-          { r: "A", label: "Jugador A", color: "#3b82f6", emoji: "🎲" },
-          { r: "B", label: "Jugador B", color: "#f97316", emoji: "🎲" },
-          { r: "gestor", label: "Gestor / Investigador", color: "#a855f7", emoji: "🔬" },
-        ].map(({ r, label, color, emoji }) => (
-          <button key={r} onClick={() => chooseRole(r)} style={{
-            background: "#12121e", border: `1px solid ${color}44`, borderRadius: 12,
-            padding: "16px 20px", display: "flex", alignItems: "center", gap: 12,
-            cursor: "pointer", textAlign: "left",
+          {r:"jugador",label:"Jugador",color:"#f97316",emoji:"🎲",desc:"Entra al experimento"},
+          {r:"gestor", label:"Gestor / Investigador",color:"#a855f7",emoji:"🔬",desc:"Control total de la sala"},
+        ].map(({r,label,color,emoji,desc})=>(
+          <button key={r} onClick={()=>chooseRole(r)} style={{
+            background:"#12121e",border:`1px solid ${color}44`,borderRadius:12,
+            padding:"16px 20px",display:"flex",alignItems:"center",gap:14,cursor:"pointer",
           }}>
-            <span style={{ fontSize: 28 }}>{emoji}</span>
-            <span style={{ color, fontWeight: 700, fontSize: 16 }}>{label}</span>
+            <span style={{fontSize:32}}>{emoji}</span>
+            <div style={{textAlign:"left"}}>
+              <div style={{color,fontWeight:700,fontSize:16}}>{label}</div>
+              <div style={{color:"#555",fontSize:12}}>{desc}</div>
+            </div>
           </button>
         ))}
       </div>
     </div>
   );
 
-  if (step === "password") return (
-    <div style={{ maxWidth: 440, margin: "0 auto", padding: "40px 20px" }}>
-      <h2 style={{ color: "#a855f7" }}>🔐 Contraseña del Gestor</h2>
+  if (step==="pw") return (
+    <div style={{maxWidth:420,margin:"0 auto",padding:"40px 20px"}}>
+      <h2 style={{color:"#a855f7",marginBottom:20}}>🔐 Acceso de Gestor</h2>
       <Card accent="#a855f7">
-        <input
-          type="password" value={password}
-          onChange={e => setPassword(e.target.value)}
-          placeholder="Contraseña"
-          style={{
-            width: "100%", background: "#0a0a0f", border: "1px solid #333",
-            borderRadius: 10, padding: "10px 14px", color: "#fff",
-            fontFamily: "inherit", fontSize: 15, marginBottom: 12, boxSizing: "border-box", outline: "none",
-          }}
-        />
-        {pwError && <p style={{ color: "#ef4444", fontSize: 13, margin: "0 0 12px" }}>{pwError}</p>}
-        <Btn onClick={checkPassword} variant="purple" style={{ width: "100%" }}>Verificar</Btn>
+        <input type="password" value={pw} onChange={e=>setPw(e.target.value)}
+          placeholder="Contraseña del gestor" onKeyDown={e=>e.key==="Enter"&&checkPw()}
+          style={{width:"100%",background:"#0a0a0f",border:"1px solid #333",borderRadius:10,
+            padding:"11px 14px",color:"#fff",fontFamily:"inherit",fontSize:15,
+            marginBottom:12,boxSizing:"border-box",outline:"none"}}/>
+        {pwErr&&<p style={{color:"#ef4444",fontSize:13,marginBottom:12}}>{pwErr}</p>}
+        <Btn onClick={checkPw} variant="purple" style={{width:"100%"}}>Verificar</Btn>
       </Card>
     </div>
   );
 
-  if (step === "profile") return (
-    <ProfileScreen roomCode={roomCode} role={role} onJoined={p => { setProfile(p); setStep("play"); }} />
+  if (step==="profile") return (
+    <ProfileScreen roomCode={roomCode} role={role}
+      onJoined={p=>{ setProfile(p); setStep("play"); }}/>
   );
 
-  if (step === "play") {
-    if (role === "gestor") return <GestorScreen roomCode={roomCode} password={password} profile={profile} />;
-    return <PlayerScreen roomCode={roomCode} role={role} profile={profile} />;
+  if (step==="play") {
+    const pid=getPlayerId(role,profile);
+    if (role==="gestor") return <GestorScreen roomCode={roomCode} profile={profile}/>;
+    return <PlayerScreen roomCode={roomCode} playerId={pid} profile={profile}/>;
   }
 }
 
-// ─── ROOT APP ─────────────────────────────────────────────────────────────────
+// ─── ROOT ─────────────────────────────────────────────────────────────────────
 export default function App() {
-  const [screen, setScreen] = useState("home"); // home | create | join
+  const [screen, setScreen] = useState("home");
   const [roomCode, setRoomCode] = useState(null);
-  const [gestorPw, setGestorPw] = useState(null);
 
-  if (screen === "home") return (
+  if (screen==="home") return (
     <HomeScreen
-      onGestor={() => setScreen("create")}
-      onJoin={(code) => { setRoomCode(code); setScreen("join"); }}
-    />
+      onGestor={()=>setScreen("create")}
+      onJoin={c=>{ setRoomCode(c); setScreen("join"); }}/>
   );
-
-  if (screen === "create") return (
+  if (screen==="create") return (
     <CreateRoomScreen
-      onCreated={(code, pw) => {
-        setRoomCode(code); setGestorPw(pw);
-        setScreen("join");
-      }}
-    />
+      onCreated={(code)=>{ setRoomCode(code); setScreen("join"); }}/>
   );
-
-  if (screen === "join") return (
-    <JoinFlow roomCode={roomCode} onBack={() => setScreen("home")} />
+  if (screen==="join") return (
+    <JoinFlow roomCode={roomCode} onBack={()=>setScreen("home")}/>
   );
 }
