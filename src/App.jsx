@@ -805,7 +805,7 @@ function GestorScreen({ roomCode }) {
         await resolveRondaDB(roomCode,rSnap.val(),n,pairKey,fresh,ronda,pidA,decA,pidB,decB);
       })();
     });
-  },[room?.partidas]);
+  },[room]);
 
   const openRoom  = ()=>update(ref(db,`rooms/${roomCode}/config`),{open:true});
   const closeRoom = ()=>update(ref(db,`rooms/${roomCode}/config`),{open:false});
@@ -1717,10 +1717,12 @@ function PlayerScreen({ roomCode, playerId, profile, onLeave }) {
     const myDec  = pd.decisiones?.[`${ronda}_${playerId}`];
     const rivDec = pd.decisiones?.[`${ronda}_${rival}`];
     const rk     = `${n}_${pairKey}_${ronda}`;
-    if (myDec&&rivDec&&!resolvedRef.current.has(rk)&&playerId<rival) {
+    if (myDec&&rivDec&&!resolvedRef.current.has(rk)) {
       resolvedRef.current.add(rk);
       setOverlay(null);
-      resolveRondaDB(roomCode,room,n,pairKey,pd,ronda,playerId,myDec,rival,rivDec);
+      resolveRondaDB(roomCode,room,n,pairKey,pd,ronda,
+        playerId<rival?playerId:rival, playerId<rival?myDec:rivDec,
+        playerId<rival?rival:playerId, playerId<rival?rivDec:myDec);
     }
   },[room,decidido]);
 
@@ -1762,10 +1764,12 @@ function PlayerScreen({ roomCode, playerId, profile, onLeave }) {
 
     const rivalDec = pd.decisiones?.[`${ronda}_${rival}`];
     const rk = `${n}_${pairKey}_${ronda}`;
-    if (rivalDec&&!resolvedRef.current.has(rk)&&playerId<rival) {
+    if (rivalDec&&!resolvedRef.current.has(rk)) {
       resolvedRef.current.add(rk);
       setOverlay(null);
-      await resolveRondaDB(roomCode,room,n,pairKey,pd,ronda,playerId,accion,rival,rivalDec);
+      await resolveRondaDB(roomCode,room,n,pairKey,pd,ronda,
+        playerId<rival?playerId:rival, playerId<rival?accion:rivalDec,
+        playerId<rival?rival:playerId, playerId<rival?rivalDec:accion);
     }
   },[decidido,room,playerId,roomCode,profile]);
 
