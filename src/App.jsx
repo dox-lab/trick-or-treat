@@ -574,14 +574,14 @@ function ProfileScreen({ roomCode, onJoined }) {
 
 // ─── PERFIL GESTOR ────────────────────────────────────────────────────────────
 function GestorProfileScreen({ roomCode, onJoined }) {
-  const [gNick, setGNick] = useState("");
+  const [gNick, setGNick] = useState("El Ojo");
   const [gCol,  setGCol]  = useState("#a855f7");
   const [gLoad, setGLoad] = useState(false);
 
   const joinGestor = async () => {
     if (!gNick.trim()) return;
     setGLoad(true);
-    const prof = { uid:"gestor", nickname:gNick.trim(), avatar:"🔬", color:gCol, role:"gestor", isBot:false };
+    const prof = { uid:"gestor", nickname:gNick.trim(), avatar:"🔺", color:gCol, role:"gestor", isBot:false };
     await set(ref(db,`rooms/${roomCode}/players/gestor`), prof);
     setGLoad(false);
     onJoined(prof);
@@ -596,11 +596,11 @@ function GestorProfileScreen({ roomCode, onJoined }) {
       </div>
       <Card accent="#a855f7">
         <div style={{textAlign:"center",marginBottom:16}}>
-          <div style={{fontSize:64,filter:`drop-shadow(0 0 14px ${gCol})`}}>🔬</div>
-          <div style={{color:gCol,fontWeight:700,fontSize:18,marginTop:4}}>{gNick||"Gestor"}</div>
+          <div style={{fontSize:64,filter:`drop-shadow(0 0 14px ${gCol})`}}>🔺</div>
+          <div style={{color:gCol,fontWeight:700,fontSize:18,marginTop:4}}>{gNick||"El Ojo"}</div>
         </div>
         <label style={{color:"#777",fontSize:13,display:"block",marginBottom:6}}>Tu nombre</label>
-        <input value={gNick} onChange={e=>setGNick(e.target.value)} placeholder="Dr. Stats"
+        <input value={gNick} onChange={e=>setGNick(e.target.value)} placeholder="El Ojo"
           onKeyDown={e=>e.key==="Enter"&&joinGestor()}
           style={{width:"100%",background:"#0a0a0f",border:"1px solid #2a2a3a",borderRadius:10,
             padding:"10px 14px",color:"#fff",fontFamily:"inherit",fontSize:15,
@@ -806,12 +806,14 @@ function GestorScreen({ roomCode }) {
             resultado:null,ts:Date.now(),
           });
           const snap2 = await get(ref(db,`rooms/${roomCode}/partidas/${n}/${pairKey}`));
-          if (!snap2.exists()) return;
+          if (!snap2.exists()||snap2.val().resultado) return;
           const pd2 = snap2.val();
           const rivalDec = pd2.decisiones?.[`${ronda}_${rival}`];
-          if (rivalDec&&pid<rival) {
+          if (rivalDec) {
             const rSnap = await get(ref(db,`rooms/${roomCode}`));
-            await resolveRondaDB(roomCode,rSnap.val(),n,pairKey,pd2,ronda,pid,decision,rival,rivalDec);
+            await resolveRondaDB(roomCode,rSnap.val(),n,pairKey,pd2,ronda,
+              pidA, pd2.decisiones?.[`${ronda}_${pidA}`],
+              pidB, pd2.decisiones?.[`${ronda}_${pidB}`]);
           }
         })();
       });
@@ -926,12 +928,14 @@ function GestorScreen({ roomCode }) {
         });
 
         const snap3   = await get(ref(db,`rooms/${roomCode}/partidas/${n}/${pairKey}`));
-        if (!snap3.exists()) return;
+        if (!snap3.exists()||snap3.val().resultado) return;
         const pd3     = snap3.val();
         const rivalDec= pd3.decisiones?.[`${ronda}_${rival}`];
-        if (rivalDec && pid < rival) {
+        if (rivalDec) {
           const rSnap = await get(ref(db,`rooms/${roomCode}`));
-          await resolveRondaDB(roomCode,rSnap.val(),n,pairKey,pd3,ronda,pid,decision,rival,rivalDec);
+          await resolveRondaDB(roomCode,rSnap.val(),n,pairKey,pd3,ronda,
+            pidA, pd3.decisiones?.[`${ronda}_${pidA}`],
+            pidB, pd3.decisiones?.[`${ronda}_${pidB}`]);
           if (decision==="retirarse"||rivalDec==="retirarse") return;
         }
       }
@@ -1663,6 +1667,7 @@ function PlayerScreen({ roomCode, playerId, profile, onLeave }) {
   const [decidido, setDecidido] = useState(false);
   const [overlay,  setOverlay]  = useState(null);
   const [timerLeft,setTimer]    = useState(null);
+  const [kicked,   setKicked]   = useState(false);
   const prevRondaRef    = useRef(null);
   const prevPartidaRef  = useRef(null);
   const timerRef        = useRef(null);
@@ -1674,6 +1679,7 @@ function PlayerScreen({ roomCode, playerId, profile, onLeave }) {
   const resultSoundRef  = useRef(null);
   const decidirRef      = useRef(null);
   const graceRef        = useRef(null);
+  const wasInRoomRef    = useRef(false);
 
   const leaveGame = async () => {
     await update(ref(db,`rooms/${roomCode}/players/${playerId}`),{ isBot:true, strategy:"ev_threshold" });
@@ -1682,9 +1688,16 @@ function PlayerScreen({ roomCode, playerId, profile, onLeave }) {
 
   useEffect(()=>{
     const r=ref(db,`rooms/${roomCode}`);
-    onValue(r,snap=>{ if(snap.exists()) setRoom(snap.val()); });
+    onValue(r,snap=>{
+      if(!snap.exists()) return;
+      const d = snap.val();
+      const stillIn = !!d.players?.[playerId];
+      if (wasInRoomRef.current && !stillIn) { setKicked(true); return; }
+      if (stillIn) wasInRoomRef.current = true;
+      setRoom(d);
+    });
     return ()=>off(r);
-  },[roomCode]);
+  },[roomCode,playerId]);
 
   const getMyPair  = useCallback((r,n)=>Object.values(r?.partidas?.[n]||{}).find(p=>(p.jugadores||[]).includes(playerId))||null,[playerId]);
   const getPairKey = useCallback((r,n)=>Object.keys(r?.partidas?.[n]||{}).find(k=>(r.partidas[n][k].jugadores||[]).includes(playerId))||null,[playerId]);
@@ -1846,6 +1859,16 @@ function PlayerScreen({ roomCode, playerId, profile, onLeave }) {
   decidirRef.current = decidir;
 
   // ── RENDER ──────────────────────────────────────────────────────────────────
+  if (kicked) return (
+    <div style={{maxWidth:420,margin:"0 auto",padding:"60px 20px",textAlign:"center"}}>
+      <GlobalCSS/>
+      <div style={{fontSize:72,animation:"popIn 0.4s ease"}}>🚫</div>
+      <h2 style={{color:"#ef4444",marginTop:12}}>Has sido expulsado</h2>
+      <p style={{color:"#666",fontSize:14,marginTop:8}}>El gestor te ha removido de la sala.</p>
+      <Btn onClick={()=>onLeave?.()} variant="ghost" style={{marginTop:20}}>Volver al inicio</Btn>
+    </div>
+  );
+
   if (!room) return (
     <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",minHeight:"70vh",color:"#555",gap:16}}>
       <GlobalCSS/>
@@ -2080,17 +2103,11 @@ function PlayerScreen({ roomCode, playerId, profile, onLeave }) {
           <div style={{marginTop:10}}>
             {config?.showEV&&(
               <EVBar value={canCheat&&probs.meCheat!==null?probs.meCheat:probs.me}
-                label={canCheat?"Tu prob. victoria (con ventaja)":"Tu prob. victoria"} color={myColor}/>
-            )}
-            {config?.showEV&&canCheat&&probs.meCheat!==null&&(
-              <EVBar value={probs.me} label="Tu prob. sin ventaja" color="#555"/>
+                label="Tu prob. victoria" color={myColor}/>
             )}
             {config?.showRivalEV&&(
               <EVBar value={canCheat&&probs.rivalCheat!==null?probs.rivalCheat:probs.rival}
-                label={canCheat?"Prob. rival (con tu ventaja)":"Prob. victoria rival"} color={rivalInfo?.color||"#ef4444"}/>
-            )}
-            {config?.showRivalEV&&canCheat&&probs.rivalCheat!==null&&(
-              <EVBar value={probs.rival} label="Prob. rival sin tu ventaja" color="#555"/>
+                label="Prob. victoria rival" color={rivalInfo?.color||"#ef4444"}/>
             )}
           </div>
         )}
