@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { initializeApp } from "firebase/app";
 import { getDatabase, ref, set, get, onValue, off, update, push } from "firebase/database";
 
@@ -32,10 +32,10 @@ function pickBotIdentity(index) {
 const BOT_STRATEGIES = [
   { id:"always_bet",   label:"Siempre apostar",      emoji:"💰", desc:"Apuesta en cada ronda sin importar nada" },
   { id:"always_fold",  label:"Siempre retirarse",     emoji:"🏳️", desc:"Se retira en la primera oportunidad" },
-  { id:"ev_threshold", label:"Umbral EV >50%",        emoji:"🧮", desc:"Apuesta si su EV supera el 50%" },
+  { id:"ev_threshold", label:"Racional P>45%",        emoji:"🧮", desc:"Apuesta si su prob. de ganar supera 45%" },
   { id:"random",       label:"Aleatorio 50/50",       emoji:"🎲", desc:"Decide al azar en cada ronda" },
-  { id:"aggressive",   label:"Agresivo EV >30%",      emoji:"🔥", desc:"Apuesta con EV>30%" },
-  { id:"conservative", label:"Conservador EV >70%",   emoji:"🛡️", desc:"Solo apuesta con mano muy fuerte" },
+  { id:"aggressive",   label:"Agresivo P>30%",        emoji:"🔥", desc:"Apuesta con prob. de ganar >30%" },
+  { id:"conservative", label:"Conservador P>58%",     emoji:"🛡️", desc:"Solo apuesta con ventaja clara (>58%)" },
 ];
 
 // ─── UTILS ───────────────────────────────────────────────────────────────────
@@ -99,18 +99,59 @@ function top3score(privados, publicosVisibles) {
 
 function calcEV(privados, publicosVisibles) {
   const { score } = top3score(privados, publicosVisibles);
-  return score / 18; // máximo posible: 3×6=18
+  return score / 18;
+}
+
+function estimateWinProb(myPrivate, publicVisible, samples=600, knownRivalDice=[]) {
+  const pubRemaining = 2 - publicVisible.length;
+  let wins = 0;
+  for (let i = 0; i < samples; i++) {
+    const pub = [...publicVisible];
+    for (let j = 0; j < pubRemaining; j++) pub.push(roll());
+    const my  = top3score(myPrivate, pub).score;
+    const rd  = [...knownRivalDice];
+    while (rd.length < 2) rd.push(roll());
+    const opp = top3score(rd, pub).score;
+    if (my > opp) wins++;
+  }
+  return wins / samples;
+}
+
+function estimateProbs(myPrivate, publicVisible, knownRivalDice=[], samples=500) {
+  const pubRemaining = 2 - publicVisible.length;
+  const hasCheat = knownRivalDice.length > 0;
+  let myW=0, rivW=0, myWC=0, rivWC=0;
+  for (let i = 0; i < samples; i++) {
+    const pub = [...publicVisible];
+    for (let j = 0; j < pubRemaining; j++) pub.push(roll());
+    const my = top3score(myPrivate, pub).score;
+    const rd1 = [roll(), roll()];
+    const o1  = top3score(rd1, pub).score;
+    if (my > o1) myW++; else if (o1 > my) rivW++;
+    if (hasCheat) {
+      const rd2 = [...knownRivalDice]; while(rd2.length<2) rd2.push(roll());
+      const o2  = top3score(rd2, pub).score;
+      if (my > o2) myWC++; else if (o2 > my) rivWC++;
+    }
+  }
+  return {
+    me:myW/samples, rival:rivW/samples,
+    meCheat:hasCheat?myWC/samples:null, rivalCheat:hasCheat?rivWC/samples:null,
+  };
 }
 
 function botDecision(strategy, privados, publicosVisibles) {
-  const ev = calcEV(privados, publicosVisibles);
   switch(strategy) {
     case "always_bet":   return "apostar";
     case "always_fold":  return "retirarse";
-    case "ev_threshold": return ev >= 0.5  ? "apostar" : "retirarse";
-    case "aggressive":   return ev >= 0.3  ? "apostar" : "retirarse";
-    case "conservative": return ev >= 0.7  ? "apostar" : "retirarse";
     case "random":       return Math.random() > 0.5 ? "apostar" : "retirarse";
+    default: break;
+  }
+  const wp = estimateWinProb(privados, publicosVisibles);
+  switch(strategy) {
+    case "ev_threshold": return wp >= 0.45 ? "apostar" : "retirarse";
+    case "aggressive":   return wp >= 0.30 ? "apostar" : "retirarse";
+    case "conservative": return wp >= 0.58 ? "apostar" : "retirarse";
     default:             return "apostar";
   }
 }
@@ -351,7 +392,7 @@ function CreateRoomScreen({ onCreated }) {
     }
     await set(ref(db,`rooms/${code}`), {
       code, password:pw,
-      config:{ totalPartidas:total, faseConfig:cfg, showEV:false, timerSecs:0,
+      config:{ totalPartidas:total, faseConfig:cfg, showEV:false, showRivalEV:false, timerSecs:0,
                open:false, botCount, botStrategies },
       status:{ phase:"lobby", partidaActual:0 },
       players:botPlayers, pairs:{}, faseSchedule:{}, balance:{}, logs:{},
@@ -1549,11 +1590,17 @@ function GestorScreen({ roomCode }) {
         <div style={{display:"flex",flexDirection:"column",gap:12}}>
           <Card accent="#a855f7">
             <div style={{fontSize:12,color:"#555",marginBottom:16}}>OPCIONES DE JUEGO</div>
-            <label style={{color:"#777",fontSize:13,display:"flex",alignItems:"center",gap:10,marginBottom:14,cursor:"pointer"}}>
+            <label style={{color:"#777",fontSize:13,display:"flex",alignItems:"center",gap:10,marginBottom:10,cursor:"pointer"}}>
               <input type="checkbox" checked={!!cfgLocal.showEV}
                 onChange={e=>setCfgLocal(c=>({...c,showEV:e.target.checked}))}
                 style={{accentColor:"#f97316",width:16,height:16}}/>
-              Mostrar barra de EV a los jugadores
+              Mostrar prob. de victoria del jugador
+            </label>
+            <label style={{color:"#777",fontSize:13,display:"flex",alignItems:"center",gap:10,marginBottom:14,cursor:"pointer"}}>
+              <input type="checkbox" checked={!!cfgLocal.showRivalEV}
+                onChange={e=>setCfgLocal(c=>({...c,showRivalEV:e.target.checked}))}
+                style={{accentColor:"#ef4444",width:16,height:16}}/>
+              Mostrar prob. de victoria del rival
             </label>
             <label style={{color:"#777",fontSize:13,display:"block",marginBottom:6}}>
               Temporizador por ronda:{" "}
@@ -1564,6 +1611,23 @@ function GestorScreen({ roomCode }) {
               onChange={e=>setCfgLocal(c=>({...c,timerSecs:+e.target.value}))}
               style={{width:"100%",marginBottom:16,accentColor:"#f97316"}}/>
             <Btn onClick={saveConfig} variant="purple" style={{width:"100%"}}>Guardar cambios</Btn>
+          </Card>
+
+          <Card accent="#3b82f6">
+            <div style={{fontSize:12,color:"#3b82f6",fontWeight:700,marginBottom:10}}>📊 Cómo se calcula la probabilidad</div>
+            <div style={{fontSize:12,color:"#666",lineHeight:1.6}}>
+              Se usa <span style={{color:"#aaa"}}>simulación Monte Carlo (500 escenarios)</span>: se completan los dados públicos
+              faltantes y se generan dados aleatorios para el rival. La prob. es el % de escenarios donde el jugador gana.
+            </div>
+            <div style={{fontSize:12,color:"#666",lineHeight:1.6,marginTop:8}}>
+              <span style={{color:"#eab308"}}>Con ventaja:</span> se usa el dado real del rival (el que el jugador puede ver)
+              en lugar de uno aleatorio. El jugador ve dos barras — su prob. normal vs. con info extra — para medir el
+              impacto de la ventaja.
+            </div>
+            <div style={{fontSize:12,color:"#666",lineHeight:1.6,marginTop:8}}>
+              <span style={{color:"#ef4444"}}>Prob. rival:</span> es el % de escenarios donde el rival supera al jugador.
+              La diferencia hasta 100% son empates (la casa gana).
+            </div>
           </Card>
 
           <BotConfig botCount={botCountL} setBotCount={setBotCountL}
@@ -1600,6 +1664,8 @@ function PlayerScreen({ roomCode, playerId, profile, onLeave }) {
   const cheatTimerRef   = useRef(null);
   const matchSoundRef   = useRef(null);
   const resultSoundRef  = useRef(null);
+  const decidirRef      = useRef(null);
+  const graceRef        = useRef(null);
 
   const leaveGame = async () => {
     await update(ref(db,`rooms/${roomCode}/players/${playerId}`),{ isBot:true, strategy:"ev_threshold" });
@@ -1681,6 +1747,7 @@ function PlayerScreen({ roomCode, playerId, profile, onLeave }) {
   useEffect(()=>{
     clearInterval(timerRef.current);
     clearTimeout(autoFoldRef.current);
+    clearTimeout(graceRef.current);
     if (!room) return;
     const secs = room.config?.timerSecs||0;
     if (!secs) { setTimer(null); return; }
@@ -1688,20 +1755,16 @@ function PlayerScreen({ roomCode, playerId, profile, onLeave }) {
     if (!myPair||myPair.resultado) { setTimer(null); return; }
     const ronda = myPair.ronda||1;
     if (ronda>3) { setTimer(null); return; }
-    // Resetear al inicio de cada ronda
-    const startedAt = myPair.startedAt||Date.now();
-    const elapsed   = Math.floor((Date.now()-startedAt)/1000);
-    const left      = Math.max(0, secs-elapsed);
-    setTimer(left);
-    timerRef.current = setInterval(()=>setTimer(l=>Math.max(0,(l||0)-1)),1000);
-    // Auto-apostar cuando llega a 0
-    if (left > 0) {
+    const GRACE = 3000;
+    setTimer(secs);
+    graceRef.current = setTimeout(()=>{
+      timerRef.current = setInterval(()=>setTimer(l=>Math.max(0,(l||0)-1)),1000);
       autoFoldRef.current = setTimeout(()=>{
         setTimer(0);
-        decidir("apostar"); // tiempo agotado → apostar automáticamente
-      }, left*1000);
-    }
-    return ()=>{ clearInterval(timerRef.current); clearTimeout(autoFoldRef.current); };
+        decidirRef.current?.("apostar");
+      }, secs*1000);
+    }, GRACE);
+    return ()=>{ clearTimeout(graceRef.current); clearInterval(timerRef.current); clearTimeout(autoFoldRef.current); };
   },[room?.status?.partidaActual, room?.config?.timerSecs, (getMyPair(room, room?.status?.partidaActual||0)||{}).ronda]);
 
   // Detectar cuando el rival decidió mientras yo ya había decidido
@@ -1772,6 +1835,7 @@ function PlayerScreen({ roomCode, playerId, profile, onLeave }) {
         playerId<rival?rival:playerId, playerId<rival?rivalDec:accion);
     }
   },[decidido,room,playerId,roomCode,profile]);
+  decidirRef.current = decidir;
 
   // ── RENDER ──────────────────────────────────────────────────────────────────
   if (!room) return (
@@ -1839,6 +1903,10 @@ function PlayerScreen({ roomCode, playerId, profile, onLeave }) {
   // Calcular top3 para mostrar al jugador
   const { score:myScore, best3:myBest3 } = top3score(myDice, pubVisible);
   const ev = myDice.length ? calcEV(myDice, pubVisible) : 0;
+  const probs = useMemo(()=>{
+    if (!myDice.length) return {me:0,rival:0,meCheat:null,rivalCheat:null};
+    return estimateProbs(myDice, pubVisible, canCheat?[rivalDice[0]]:[]);
+  },[myDice[0],myDice[1],ronda,canCheat?rivalDice[0]:0,n]);
 
   // RESULTADO
   if (resultado) {
@@ -2001,7 +2069,24 @@ function PlayerScreen({ roomCode, playerId, profile, onLeave }) {
         {ronda===1&&<div style={{fontSize:11,color:"#555",textAlign:"center",marginTop:4}}>
           (score provisional — solo con tus dados)
         </div>}
-        {config?.showEV&&<div style={{marginTop:10}}><EVBar value={ev} label="Ventaja esperada (EV)" color={myColor}/></div>}
+        {(config?.showEV||config?.showRivalEV)&&(
+          <div style={{marginTop:10}}>
+            {config?.showEV&&(
+              <EVBar value={canCheat&&probs.meCheat!==null?probs.meCheat:probs.me}
+                label={canCheat?"Tu prob. victoria (con ventaja)":"Tu prob. victoria"} color={myColor}/>
+            )}
+            {config?.showEV&&canCheat&&probs.meCheat!==null&&(
+              <EVBar value={probs.me} label="Tu prob. sin ventaja" color="#555"/>
+            )}
+            {config?.showRivalEV&&(
+              <EVBar value={canCheat&&probs.rivalCheat!==null?probs.rivalCheat:probs.rival}
+                label={canCheat?"Prob. rival (con tu ventaja)":"Prob. victoria rival"} color={rivalInfo?.color||"#ef4444"}/>
+            )}
+            {config?.showRivalEV&&canCheat&&probs.rivalCheat!==null&&(
+              <EVBar value={probs.rival} label="Prob. rival sin tu ventaja" color="#555"/>
+            )}
+          </div>
+        )}
       </Card>
 
       {/* Dados públicos */}
@@ -2096,6 +2181,7 @@ function PlayerMenu({ onLeave, players, balance, playerId, roomCode }) {
 
   const items = [
     {label:"Reglas del juego", icon:"📖", action:()=>{ setPanel("rules");  setOpen(false); }},
+    {label:"Probabilidades",   icon:"📊", action:()=>{ setPanel("probs");  setOpen(false); }},
     {label:"Ranking",          icon:"🏅", action:()=>{ setPanel("ranking");setOpen(false); }},
     {label:"Pantalla completa",icon:"⛶",  action:toggleFS},
     {label:"Salir del juego",  icon:"🚪", action:()=>{ setPanel("confirm");setOpen(false); }, danger:true},
@@ -2131,6 +2217,26 @@ function PlayerMenu({ onLeave, players, balance, playerId, roomCode }) {
             ["🏠 Retirarse","Si te retiras, el rival gana el pozo. Si ambos se retiran, la casa gana."],
             ["⚖️ Empate","Si ambos apuestan las 3 rondas y el score es igual, la casa gana el pozo."],
             ["👁️ Fases","En algunas partidas puedes ver un dado del rival (o él ve el tuyo). Esto es parte del experimento."],
+          ].map(([t,d])=>(
+            <div key={t} style={{marginBottom:10}}>
+              <div style={{color:"#aaa",fontWeight:700,fontSize:13}}>{t}</div>
+              <div style={{color:"#666",fontSize:12,lineHeight:1.5}}>{d}</div>
+            </div>
+          ))}
+          <Btn onClick={()=>setPanel(null)} style={{width:"100%",marginTop:8}}>Cerrar</Btn>
+        </Card>
+      </Overlay>
+
+      <Overlay show={panel==="probs"}>
+        <Card style={{maxWidth:400,padding:28,maxHeight:"85vh",overflowY:"auto",animation:"popIn 0.3s ease"}}>
+          <h3 style={{color:"#a855f7",marginTop:0,marginBottom:12}}>📊 Cálculo de probabilidades</h3>
+          {[
+            ["🎯 Método","Se usa simulación Monte Carlo con 500 escenarios aleatorios para estimar tu probabilidad de ganar el duelo."],
+            ["🔄 Simulación","En cada escenario: se completan los dados públicos que faltan con tiradas aleatorias, se generan 2 dados aleatorios para el rival, y se calcula el top-3 score de ambos."],
+            ["📈 Tu probabilidad","Es el % de escenarios donde TU score top-3 supera al del rival. Considera los dados que aún no se revelan."],
+            ["📉 Prob. del rival","Es el % de escenarios donde el rival te supera. La diferencia hasta 100% son empates (gana la casa)."],
+            ["👁️ Con ventaja","Si puedes ver un dado del rival, la simulación usa ese dato real en vez de uno aleatorio. Verás dos barras: tu prob. normal vs. tu prob. con la info extra, para medir cuánto te ayuda la ventaja."],
+            ["⚖️ Ejemplo","Si tienes [5,6] y no hay dados públicos aún, la simulación prueba todas las combinaciones posibles de públicos y dados rivales. Resultado: ~70% de ganar."],
           ].map(([t,d])=>(
             <div key={t} style={{marginBottom:10}}>
               <div style={{color:"#aaa",fontWeight:700,fontSize:13}}>{t}</div>
