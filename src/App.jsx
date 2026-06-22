@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { initializeApp } from "firebase/app";
 import { getDatabase, ref, set, get, onValue, off, update, push } from "firebase/database";
 
@@ -983,6 +983,10 @@ function GestorScreen({ roomCode }) {
     await update(ref(db,`rooms/${roomCode}`), updates);
   };
 
+  const kickPlayer = async (uid) => {
+    await update(ref(db,`rooms/${roomCode}`),{[`players/${uid}`]:null,[`balance/${uid}`]:null});
+  };
+
   const saveConfig = ()=>update(ref(db,`rooms/${roomCode}/config`),cfgLocal);
 
   const exportCSV = ()=>{
@@ -1163,6 +1167,10 @@ function GestorScreen({ roomCode }) {
                     <div style={{color:p.color,fontWeight:700,fontSize:13}}>{p.nickname}</div>
                     <div style={{color:"#555",fontSize:11}}>💰 {balance?.[uid]??10}</div>
                   </div>
+                  {phase==="lobby"&&(
+                    <button onClick={()=>kickPlayer(uid)} title="Expulsar" style={{background:"none",border:"none",
+                      color:"#ef444488",cursor:"pointer",fontSize:14,padding:"2px 4px",marginLeft:4}}>✕</button>
+                  )}
                 </div>
               ))}
               {!humanPl.length&&<span style={{color:"#444",fontSize:13}}>Esperando jugadores…</span>}
@@ -1903,10 +1911,9 @@ function PlayerScreen({ roomCode, playerId, profile, onLeave }) {
   // Calcular top3 para mostrar al jugador
   const { score:myScore, best3:myBest3 } = top3score(myDice, pubVisible);
   const ev = myDice.length ? calcEV(myDice, pubVisible) : 0;
-  const probs = useMemo(()=>{
-    if (!myDice.length) return {me:0,rival:0,meCheat:null,rivalCheat:null};
-    return estimateProbs(myDice, pubVisible, canCheat?[rivalDice[0]]:[]);
-  },[myDice[0],myDice[1],ronda,canCheat?rivalDice[0]:0,n]);
+  const probs = myDice.length
+    ? estimateProbs(myDice, pubVisible, canCheat?[rivalDice[0]]:[])
+    : {me:0,rival:0,meCheat:null,rivalCheat:null};
 
   // RESULTADO
   if (resultado) {
