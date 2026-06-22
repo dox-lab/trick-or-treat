@@ -19,6 +19,15 @@ const db  = getDatabase(app);
 // ─── CONSTANTES ──────────────────────────────────────────────────────────────
 const AVATARS = ["🦇","🐺","🕷️","🦉","🐈‍⬛","💀","🐸","🦊","🐙","🐝"];
 const COLORS  = ["#f97316","#22c55e","#a855f7","#3b82f6","#ef4444","#eab308","#06b6d4","#ec4899","#14b8a6","#f59e0b"];
+const NICKNAMES = ["StatsWitch","DataGhost","BayesBat","ProbWolf","SigmaSpider","MeanOwl","VarCat","ModeFrog","ChiFox","HypoKraken","TestBee","NormZombie","PoissonPumpkin","RegressWitch","SampleCrow","ErrorDemon"];
+const BOT_NAMES = ["Lucía","Mateo","Valeria","Sebastián","Camila","Diego","Renata","Andrés","Daniela","Tomás","Sofía","Nicolás","Mariana","Emilio","Paula","Santiago"];
+
+function pickBotIdentity(index) {
+  const name   = BOT_NAMES[index % BOT_NAMES.length];
+  const avatar = AVATARS[(index * 3 + 7) % AVATARS.length];
+  const color  = COLORS[(index * 3 + 2) % COLORS.length];
+  return { nickname:name, avatar, color };
+}
 
 const BOT_STRATEGIES = [
   { id:"always_bet",   label:"Siempre apostar",      emoji:"💰", desc:"Apuesta en cada ronda sin importar nada" },
@@ -34,6 +43,44 @@ const roll    = () => Math.floor(Math.random() * 6) + 1;
 const genCode = () => Math.random().toString(36).substring(2,7).toUpperCase();
 const genUID  = () => "u_" + Math.random().toString(36).substring(2,10);
 const sleep   = (ms) => new Promise(r => setTimeout(r, ms));
+
+// ─── SONIDOS (Web Audio API) ─────────────────────────────────────────────────
+let _audioCtx = null;
+function getAudioCtx() {
+  if (!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (_audioCtx.state === "suspended") _audioCtx.resume();
+  return _audioCtx;
+}
+function playTone(freq, dur, delay=0, type="sine", vol=0.25) {
+  try {
+    const ctx = getAudioCtx();
+    const osc = ctx.createOscillator();
+    const g   = ctx.createGain();
+    osc.type  = type;
+    osc.frequency.value = freq;
+    g.gain.setValueAtTime(vol, ctx.currentTime+delay);
+    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime+delay+dur);
+    osc.connect(g); g.connect(ctx.destination);
+    osc.start(ctx.currentTime+delay);
+    osc.stop(ctx.currentTime+delay+dur);
+  } catch(_){}
+}
+function soundNewMatch() {
+  playTone(523,0.12,0);      // C5
+  playTone(659,0.12,0.10);   // E5
+  playTone(784,0.20,0.20);   // G5
+}
+function soundWin() {
+  playTone(523,0.10,0);       // C5
+  playTone(659,0.10,0.09);    // E5
+  playTone(784,0.10,0.18);    // G5
+  playTone(1047,0.30,0.27);   // C6
+}
+function soundLose() {
+  playTone(392,0.18,0,"triangle",0.20);    // G4
+  playTone(330,0.22,0.15,"triangle",0.18); // E4
+  playTone(262,0.35,0.32,"triangle",0.12); // C4
+}
 
 /**
  * MECÁNICA CENTRAL: top3score
@@ -155,6 +202,8 @@ const GlobalCSS = () => (
     @keyframes slideUp  { from{opacity:0;transform:translateY(14px)} to{opacity:1;transform:translateY(0)} }
     @keyframes popIn    { 0%{transform:scale(0.5);opacity:0} 80%{transform:scale(1.08)} 100%{transform:scale(1);opacity:1} }
     @keyframes timerPulse { 0%,100%{transform:scale(1)} 50%{transform:scale(1.1)} }
+    @keyframes cheatGlow { 0%,100%{box-shadow:0 0 30px #eab30844,0 0 60px #eab30822} 50%{box-shadow:0 0 50px #eab30888,0 0 100px #eab30844} }
+    @keyframes cheatIcon { 0%{transform:scale(0) rotate(-30deg);opacity:0} 50%{transform:scale(1.3) rotate(10deg);opacity:1} 100%{transform:scale(1) rotate(0deg);opacity:1} }
     * { box-sizing:border-box; }
   `}</style>
 );
@@ -259,6 +308,22 @@ function HomeScreen({ onGestor, onJoin }) {
           <Btn onClick={()=>onJoin(code)} disabled={code.length<4}>Entrar</Btn>
         </div>
       </Card>
+      <Card accent="#2a2a3a" style={{marginTop:12}}>
+        <div style={{fontSize:13,color:"#f97316",fontWeight:700,marginBottom:10}}>📖 ¿Cómo se juega?</div>
+        {[
+          ["🎲","Recibes 2 dados privados que solo tú ves."],
+          ["🌐","Hay 2 dados públicos compartidos que se revelan uno por ronda."],
+          ["🏆","Tu score es la suma de los 3 dados más altos entre tus privados y los públicos visibles."],
+          ["💰","En cada ronda decides: apostar (+1 ficha al pozo) o retirarte y ceder el pozo al rival."],
+          ["⚔️","Si ambos apuestan las 3 rondas, gana quien tenga mayor score. Empate = la casa gana."],
+          ["👁️","En algunas partidas tendrás ventaja: podrás espiar un dado de tu rival."],
+        ].map(([icon,text])=>(
+          <div key={icon} style={{display:"flex",gap:8,marginBottom:6,alignItems:"flex-start"}}>
+            <span style={{fontSize:14,flexShrink:0,marginTop:1}}>{icon}</span>
+            <span style={{color:"#666",fontSize:12,lineHeight:1.5}}>{text}</span>
+          </div>
+        ))}
+      </Card>
     </div>
   );
 }
@@ -268,8 +333,8 @@ function CreateRoomScreen({ onCreated }) {
   const [pw, setPw]       = useState("");
   const [total, setTotal] = useState(5);
   const [cfg, setCfg]     = useState({control:1,yo_trampo:2,rival_trampa:1,ambos:1});
-  const [botCount, setBotCount]       = useState(0);
-  const [botStrategy, setBotStrategy] = useState("ev_threshold");
+  const [botCount, setBotCount]           = useState(0);
+  const [botStrategies, setBotStrategies] = useState([]);
   const [loading, setLoading]         = useState(false);
   const suma = Object.values(cfg).reduce((a,b)=>a+b,0);
   const upd  = (k,v) => setCfg(c=>({...c,[k]:Math.max(0,v)}));
@@ -281,13 +346,13 @@ function CreateRoomScreen({ onCreated }) {
     const botPlayers = {};
     for (let i=0; i<botCount; i++) {
       const bid = `bot_${i}`;
-      botPlayers[bid] = { uid:bid, nickname:`Bot ${i+1}`, avatar:"🤖",
-        color:COLORS[(i+4)%COLORS.length], isBot:true, strategy:botStrategy };
+      const identity = pickBotIdentity(i);
+      botPlayers[bid] = { uid:bid, ...identity, isBot:true, strategy:botStrategies[i]||"ev_threshold" };
     }
     await set(ref(db,`rooms/${code}`), {
       code, password:pw,
       config:{ totalPartidas:total, faseConfig:cfg, showEV:false, timerSecs:0,
-               open:false, botCount, botStrategy },
+               open:false, botCount, botStrategies },
       status:{ phase:"lobby", partidaActual:0 },
       players:botPlayers, pairs:{}, faseSchedule:{}, balance:{}, logs:{},
       createdAt:Date.now(),
@@ -318,10 +383,10 @@ function CreateRoomScreen({ onCreated }) {
           Fases <span style={{color:suma===total?"#22c55e":"#ef4444",fontWeight:700}}>({suma}/{total})</span>
         </div>
         {[
-          {k:"control",      label:"🎯 Control",          color:"#aaa"},
-          {k:"yo_trampo",    label:"🃏 Yo veo dado rival", color:"#eab308"},
-          {k:"rival_trampa", label:"👁️ Rival ve mi dado",  color:"#ef4444"},
-          {k:"ambos",        label:"⚔️ Ambos con trampa",  color:"#a855f7"},
+          {k:"control",      label:"🎯 Ninguno tramposo",   color:"#aaa"},
+          {k:"yo_trampo",    label:"🃏 Yo tramposo",        color:"#eab308"},
+          {k:"rival_trampa", label:"👁️ Rival tramposo",     color:"#ef4444"},
+          {k:"ambos",        label:"⚔️ Ambos tramposos",    color:"#a855f7"},
         ].map(({k,label,color})=>(
           <div key={k} style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
             <span style={{flex:1,fontSize:13,color}}>{label}</span>
@@ -336,7 +401,7 @@ function CreateRoomScreen({ onCreated }) {
       </Card>
 
       <BotConfig botCount={botCount} setBotCount={setBotCount}
-        botStrategy={botStrategy} setBotStrategy={setBotStrategy}/>
+        botStrategies={botStrategies} setBotStrategies={setBotStrategies}/>
 
       <Btn onClick={create} disabled={!pw||loading||suma!==total} variant="purple" style={{width:"100%",marginTop:12}}>
         {loading?"Creando...":"Crear sala 🎃"}
@@ -346,31 +411,56 @@ function CreateRoomScreen({ onCreated }) {
 }
 
 // Componente reutilizable para configurar bots (usado en crear sala Y en gestor)
-function BotConfig({ botCount, setBotCount, botStrategy, setBotStrategy }) {
+function BotConfig({ botCount, setBotCount, botStrategies, setBotStrategies }) {
+  const handleCountChange = (n) => {
+    setBotCount(n);
+    setBotStrategies(prev => {
+      const next = [...prev];
+      while (next.length < n) next.push("ev_threshold");
+      return next.slice(0, n);
+    });
+  };
+  const setOne = (i, id) => setBotStrategies(prev => {
+    const next = [...prev]; next[i] = id; return next;
+  });
   return (
     <Card accent="#22c55e" style={{marginBottom:12}}>
       <div style={{fontSize:13,color:"#22c55e",fontWeight:700,marginBottom:12}}>🤖 Bots</div>
       <label style={{color:"#777",fontSize:13,display:"block",marginBottom:6}}>
         Número de bots: <span style={{color:"#22c55e"}}>{botCount}</span>
       </label>
-      <input type="range" min={0} max={6} value={botCount} onChange={e=>setBotCount(+e.target.value)}
+      <input type="range" min={0} max={6} value={botCount} onChange={e=>handleCountChange(+e.target.value)}
         style={{width:"100%",marginBottom:12,accentColor:"#22c55e"}}/>
       {botCount>0 && (
-        <div style={{display:"flex",flexDirection:"column",gap:6}}>
-          {BOT_STRATEGIES.map(s=>(
-            <button key={s.id} onClick={()=>setBotStrategy(s.id)} style={{
-              background:botStrategy===s.id?"#22c55e22":"#1e1e2e",
-              border:`1px solid ${botStrategy===s.id?"#22c55e":"#2a2a3a"}`,
-              borderRadius:10,padding:"8px 12px",cursor:"pointer",textAlign:"left",
-              display:"flex",alignItems:"center",gap:10,
-            }}>
-              <span style={{fontSize:16}}>{s.emoji}</span>
-              <div>
-                <div style={{color:botStrategy===s.id?"#22c55e":"#aaa",fontWeight:700,fontSize:12}}>{s.label}</div>
-                <div style={{color:"#555",fontSize:11}}>{s.desc}</div>
+        <div style={{display:"flex",flexDirection:"column",gap:8}}>
+          {Array.from({length:botCount},(_,i)=>{
+            const cur = botStrategies[i]||"ev_threshold";
+            const info = BOT_STRATEGIES.find(s=>s.id===cur)||BOT_STRATEGIES[0];
+            const id = pickBotIdentity(i);
+            return (
+              <div key={i} style={{background:"#1a1a2a",borderRadius:10,padding:"10px 12px",
+                border:"1px solid #22c55e33"}}>
+                <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+                  <span style={{fontSize:16}}>{id.avatar}</span>
+                  <span style={{color:id.color,fontWeight:700,fontSize:13}}>{id.nickname}</span>
+                  <span style={{color:"#555",fontSize:11,marginLeft:"auto"}}>{info.emoji} {info.label}</span>
+                </div>
+                <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
+                  {BOT_STRATEGIES.map(s=>(
+                    <button key={s.id} onClick={()=>setOne(i,s.id)} title={s.desc} style={{
+                      background:cur===s.id?"#22c55e22":"#12121e",
+                      border:`1px solid ${cur===s.id?"#22c55e":"#2a2a3a"}`,
+                      borderRadius:8,padding:"5px 10px",cursor:"pointer",
+                      display:"flex",alignItems:"center",gap:5,
+                    }}>
+                      <span style={{fontSize:14}}>{s.emoji}</span>
+                      <span style={{color:cur===s.id?"#22c55e":"#666",fontWeight:700,fontSize:11}}>{s.label}</span>
+                    </button>
+                  ))}
+                </div>
               </div>
-            </button>
-          ))}
+            );
+          })}
         </div>
       )}
     </Card>
@@ -379,9 +469,9 @@ function BotConfig({ botCount, setBotCount, botStrategy, setBotStrategy }) {
 
 // ─── PERFIL JUGADOR ───────────────────────────────────────────────────────────
 function ProfileScreen({ roomCode, onJoined }) {
-  const [nickname, setNickname] = useState("");
-  const [avatar,   setAvatar]   = useState(AVATARS[0]);
-  const [color,    setColor]    = useState(COLORS[0]);
+  const [nickname, setNickname] = useState(()=>NICKNAMES[Math.floor(Math.random()*NICKNAMES.length)]);
+  const [avatar,   setAvatar]   = useState(()=>AVATARS[Math.floor(Math.random()*AVATARS.length)]);
+  const [color,    setColor]    = useState(()=>COLORS[Math.floor(Math.random()*COLORS.length)]);
   const [error,    setError]    = useState("");
   const [loading,  setLoading]  = useState(false);
 
@@ -593,13 +683,17 @@ function GestorScreen({ roomCode }) {
   const [room,       setRoom]      = useState(null);
   const [tab,        setTab]       = useState("control");
   const [cfgLocal,   setCfgLocal]  = useState(null);
-  const [botCountL,  setBotCountL] = useState(0);
-  const [botStratL,  setBotStratL] = useState("ev_threshold");
+  const [botCountL,  setBotCountL]  = useState(0);
+  const [botStratsL, setBotStratsL] = useState([]);
 
   useEffect(()=>{
     const r = ref(db,`rooms/${roomCode}`);
     onValue(r, snap=>{ if(snap.exists()){ const d=snap.val(); setRoom(d);
-      if(!cfgLocal){ setCfgLocal(d.config); setBotCountL(d.config?.botCount||0); setBotStratL(d.config?.botStrategy||"ev_threshold"); }
+      if(!cfgLocal){
+        setCfgLocal(d.config); setBotCountL(d.config?.botCount||0);
+        const bc = d.config?.botCount||0;
+        setBotStratsL(d.config?.botStrategies || Array(bc).fill(d.config?.botStrategy||"ev_threshold"));
+      }
     }});
     return ()=>off(r);
   },[roomCode]);
@@ -626,6 +720,62 @@ function GestorScreen({ roomCode }) {
     }, 3000);
     return ()=>clearTimeout(timer);
   },[room?.partidas, room?.status?.partidaActual]);
+
+  // Detectar bots con decisiones pendientes (cubre jugadores convertidos a bot mid-partida)
+  const botHandledRef = useRef(new Set());
+  useEffect(()=>{
+    if (!room||room.status?.phase!=="playing") return;
+    const n = room.status?.partidaActual||0;
+    const pData = room.partidas?.[n];
+    if (!pData) return;
+    Object.entries(pData).forEach(([pairKey,pd])=>{
+      if (pd.resultado) return;
+      const ronda = pd.ronda||1;
+      if (ronda>3) return;
+      const [pidA,pidB] = pd.jugadores||[];
+      [pidA,pidB].forEach(pid=>{
+        if (!room.players?.[pid]?.isBot) return;
+        const decKey = `${ronda}_${pid}`;
+        if (pd.decisiones?.[decKey]) return;
+        const hk = `${n}_${pairKey}_${ronda}_${pid}`;
+        if (botHandledRef.current.has(hk)) return;
+        botHandledRef.current.add(hk);
+        (async ()=>{
+          const strategy = room.players[pid].strategy||"ev_threshold";
+          const myDice   = pd.dados?.[pid]||[];
+          const pub      = (pd.publicos||[]).slice(0,ronda-1);
+          const decision = botDecision(strategy, myDice, pub);
+          const delay    = 800+Math.random()*1400;
+          await sleep(delay);
+          const snap = await get(ref(db,`rooms/${roomCode}/partidas/${n}/${pairKey}`));
+          if (!snap.exists()||snap.val().resultado) return;
+          if (snap.val().decisiones?.[decKey]) return;
+          await update(ref(db,`rooms/${roomCode}/partidas/${n}/${pairKey}/decisiones`),{[decKey]:decision});
+          const rival  = pid===pidA?pidB:pidA;
+          const ev     = calcEV(myDice,pub);
+          const logRef = push(ref(db,`rooms/${roomCode}/logs`));
+          await set(logRef,{
+            partida:n,pairKey,jugador:pid,rival,
+            nickname_jugador:room.players?.[pid]?.nickname||pid,
+            nickname_rival:room.players?.[rival]?.nickname||rival,
+            accion:decision,ronda,ev,tiempo_ms:Math.floor(delay),
+            fase:pd.fases?.[pid]||"control",
+            suma_propia:myDice.reduce((a,b)=>a+b,0),
+            suma_publica:pub.reduce((a,b)=>a+b,0),
+            resultado:null,ts:Date.now(),
+          });
+          const snap2 = await get(ref(db,`rooms/${roomCode}/partidas/${n}/${pairKey}`));
+          if (!snap2.exists()) return;
+          const pd2 = snap2.val();
+          const rivalDec = pd2.decisiones?.[`${ronda}_${rival}`];
+          if (rivalDec&&pid<rival) {
+            const rSnap = await get(ref(db,`rooms/${roomCode}`));
+            await resolveRondaDB(roomCode,rSnap.val(),n,pairKey,pd2,ronda,pid,decision,rival,rivalDec);
+          }
+        })();
+      });
+    });
+  },[room?.partidas, room?.players]);
 
   const openRoom  = ()=>update(ref(db,`rooms/${roomCode}/config`),{open:true});
   const closeRoom = ()=>update(ref(db,`rooms/${roomCode}/config`),{open:false});
@@ -754,24 +904,118 @@ function GestorScreen({ roomCode }) {
     Object.keys(players).filter(k=>players[k].isBot).forEach(k=>{ updates[`players/${k}`]=null; });
     for (let i=0; i<botCountL; i++) {
       const bid = `bot_${i}`;
-      updates[`players/${bid}`] = { uid:bid, nickname:`Bot ${i+1}`, avatar:"🤖",
-        color:COLORS[(i+4)%COLORS.length], isBot:true, strategy:botStratL };
+      const identity = pickBotIdentity(i);
+      updates[`players/${bid}`] = { uid:bid, ...identity, isBot:true, strategy:botStratsL[i]||"ev_threshold" };
     }
-    updates[`config/botCount`]    = botCountL;
-    updates[`config/botStrategy`] = botStratL;
+    updates[`config/botCount`]      = botCountL;
+    updates[`config/botStrategies`] = botStratsL;
     await update(ref(db,`rooms/${roomCode}`), updates);
   };
 
   const saveConfig = ()=>update(ref(db,`rooms/${roomCode}/config`),cfgLocal);
 
   const exportCSV = ()=>{
-    const logs = Object.values(room?.logs||{}).sort((a,b)=>a.ts-b.ts);
-    if (!logs.length) return;
-    const cols=["partida","pairKey","jugador","rival","nickname_jugador","nickname_rival","accion","ronda","ev","tiempo_ms","fase","suma_propia","suma_publica","scoreA","scoreB","resultado"];
-    const rows=logs.map(l=>cols.map(c=>`"${l[c]??""}""`).join(","));
-    const blob=new Blob([[cols.join(","),...rows].join("\n")],{type:"text/csv"});
-    const a=document.createElement("a"); a.href=URL.createObjectURL(blob);
-    a.download=`tot_${roomCode}.csv`; a.click();
+    const pl = room?.players||{};
+    const bal = room?.balance||{};
+    const pts = room?.partidas||{};
+    const rawLogs = Object.values(room?.logs||{}).sort((a,b)=>a.ts-b.ts);
+
+    const cols = [
+      "sala","partida","par","ronda",
+      "jugador_id","jugador_nick","jugador_avatar","jugador_es_bot",
+      "rival_id","rival_nick","rival_es_bot",
+      "decision","rival_decision",
+      "dado_priv_1","dado_priv_2","rival_dado_priv_1","rival_dado_priv_2",
+      "dado_pub_1","dado_pub_2","dados_pub_visibles",
+      "top3_score","ev",
+      "fase_jugador","fase_rival",
+      "pozo","tiempo_ms",
+      "partida_ganador_id","partida_ganador_nick","partida_resultado","partida_motivo",
+      "score_final_jugador","score_final_rival",
+      "best3_jugador","best3_rival",
+      "balance_jugador","balance_rival",
+      "timestamp",
+    ];
+
+    const esc = v => {
+      const s = String(v??"");
+      return s.includes(",") || s.includes('"') || s.includes("\n")
+        ? '"' + s.replace(/"/g, '""') + '"' : s;
+    };
+
+    const rows = [];
+
+    const sortedPartidas = Object.keys(pts).map(Number).sort((a,b)=>a-b);
+    sortedPartidas.forEach(nPart => {
+      Object.entries(pts[nPart]||{}).forEach(([pairKey, pd]) => {
+        const [pA,pB] = pd.jugadores||[];
+        const pub = pd.publicos||[];
+        const ganador = pd.ganador||"";
+        const resultado = pd.resultado||"";
+        const motivo = resultado.includes("Empate") ? "empate"
+          : resultado.includes("retirar") || resultado.includes("Retirada") ? "retiro"
+          : resultado.includes("Tres unos") ? "tres_unos"
+          : resultado.includes("Mayor suma") ? "mayor_suma"
+          : resultado.includes("Casa") ? "casa" : "";
+
+        [pA,pB].forEach(pid => {
+          const rival = pid===pA ? pB : pA;
+          const pInfo = pl[pid]||{};
+          const rInfo = pl[rival]||{};
+          const myDice = pd.dados?.[pid]||[];
+          const rivDice = pd.dados?.[rival]||[];
+          const faseJ = pd.fases?.[pid]||"control";
+          const faseR = pd.fases?.[rival]||"control";
+          const isJugA = pid===pA;
+          const scoreFJ = isJugA ? pd.scoreA : pd.scoreB;
+          const scoreFR = isJugA ? pd.scoreB : pd.scoreA;
+          const best3J = isJugA ? pd.best3A : pd.best3B;
+          const best3R = isJugA ? pd.best3B : pd.best3A;
+
+          for (let ronda=1; ronda<=3; ronda++) {
+            const decKey = `${ronda}_${pid}`;
+            const dec = pd.decisiones?.[decKey];
+            if (dec===undefined) continue;
+
+            const rivDecKey = `${ronda}_${rival}`;
+            const rivDec = pd.decisiones?.[rivDecKey]||"";
+
+            const pubVis = pub.slice(0, ronda-1);
+            const { score } = top3score(myDice, pubVis);
+            const ev = calcEV(myDice, pubVis);
+
+            const logMatch = rawLogs.find(l =>
+              l.partida===nPart && l.jugador===pid && l.ronda===ronda && l.accion===dec && l.pairKey===pairKey
+            );
+            const tiempo = logMatch?.tiempo_ms ?? "";
+            const ts = logMatch?.ts ?? "";
+
+            rows.push([
+              roomCode, nPart, pairKey, ronda,
+              pid, pInfo.nickname||pid, pInfo.avatar||"", pInfo.isBot?"TRUE":"FALSE",
+              rival, rInfo.nickname||rival, rInfo.isBot?"TRUE":"FALSE",
+              dec, rivDec,
+              myDice[0]??"", myDice[1]??"", rivDice[0]??"", rivDice[1]??"",
+              pub[0]??"", pub[1]??"", ronda-1,
+              score, (ev*100).toFixed(1),
+              faseJ, faseR,
+              pd.pot||2, tiempo,
+              ganador, ganador==="casa"?"casa":(pl[ganador]?.nickname||ganador), resultado, motivo,
+              scoreFJ??"", scoreFR??"",
+              (best3J||[]).join("+"), (best3R||[]).join("+"),
+              bal[pid]??10, bal[rival]??10,
+              ts,
+            ].map(esc).join(","));
+          }
+        });
+      });
+    });
+
+    if (!rows.length) return;
+    const bom = "﻿";
+    const blob = new Blob([bom + cols.join(",") + "\n" + rows.join("\n")], {type:"text/csv;charset=utf-8"});
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+    a.download = `trick_or_treat_${roomCode}_${new Date().toISOString().slice(0,10)}.csv`; a.click();
   };
 
   if (!room) return <div style={{color:"#666",padding:40,textAlign:"center"}}>Cargando sala…</div>;
@@ -785,7 +1029,7 @@ function GestorScreen({ roomCode }) {
   const pActual     = status?.partidaActual||0;
   const pData       = partidas?.[pActual]||{};
   const TABS = [{id:"control",label:"🎮 Control"},{id:"partidas",label:"🎲 Partidas"},
-                {id:"datos",label:"📊 Datos"},{id:"config",label:"⚙️ Config"}];
+                {id:"stats",label:"📈 Stats"},{id:"datos",label:"📊 Datos"},{id:"config",label:"⚙️ Config"}];
 
   return (
     <div style={{maxWidth:740,margin:"0 auto",padding:"20px 16px"}}>
@@ -857,19 +1101,22 @@ function GestorScreen({ roomCode }) {
           {botPl.length>0&&(
             <Card accent="#22c55e">
               <div style={{fontSize:11,color:"#22c55e",marginBottom:10}}>
-                BOTS ({botPl.length}) · {BOT_STRATEGIES.find(s=>s.id===config?.botStrategy)?.label}
+                BOTS ({botPl.length})
               </div>
               <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
-                {botPl.map(([uid,p])=>(
-                  <div key={uid} style={{background:"#1a1a2a",borderRadius:10,padding:"7px 12px",
-                    border:"1px solid #22c55e33",display:"flex",alignItems:"center",gap:6}}>
-                    <span style={{fontSize:18}}>🤖</span>
-                    <div>
-                      <div style={{color:"#22c55e",fontWeight:700,fontSize:12}}>{p.nickname}</div>
-                      <div style={{color:"#555",fontSize:10}}>💰 {balance?.[uid]??10}</div>
+                {botPl.map(([uid,p])=>{
+                  const si = BOT_STRATEGIES.find(s=>s.id===p.strategy);
+                  return (
+                    <div key={uid} style={{background:"#1a1a2a",borderRadius:10,padding:"7px 12px",
+                      border:"1px solid #22c55e33",display:"flex",alignItems:"center",gap:6}}>
+                      <span style={{fontSize:18}}>{p.avatar} 🤖</span>
+                      <div>
+                        <div style={{color:p.color||"#22c55e",fontWeight:700,fontSize:12}}>{p.nickname}</div>
+                        <div style={{color:"#555",fontSize:10}}>💰 {balance?.[uid]??10} · {si?.emoji||"🧮"} {si?.label||p.strategy}</div>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </Card>
           )}
@@ -888,7 +1135,7 @@ function GestorScreen({ roomCode }) {
                   {[[pA,plA,pd.scoreA,pd.best3A],[pB,plB,pd.scoreB,pd.best3B]].map(([pid,pl,score,best3])=>pl&&(
                     <div key={pid}>
                       <div style={{color:pl.color,fontWeight:700,fontSize:13}}>
-                        {pl.isBot?"🤖":pl.avatar} {pl.nickname}
+                        {pl.avatar} {pl.nickname}{pl.isBot?" 🤖":""}
                       </div>
                       <div style={{fontSize:11,color:"#555",fontFamily:"monospace",marginTop:2}}>
                         Dados: {(pd.dados?.[pid]||[]).join(" | ")}
@@ -933,9 +1180,10 @@ function GestorScreen({ roomCode }) {
         <div style={{display:"flex",flexDirection:"column",gap:10}}>
           {Array.from({length:config?.totalPartidas||5},(_,i)=>i+1).map(n=>{
             const done=n<pActual, cur=n===pActual, pd=partidas?.[n]||{};
+            const pairs = Object.entries(pd);
             return (
               <Card key={n} accent={cur?"#f97316":done?"#22c55e44":"#2a2a3a"}>
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:pairs.length?10:0}}>
                   <span style={{fontWeight:700,color:cur?"#f97316":done?"#22c55e":"#555"}}>
                     Partida {n}{cur&&" ← actual"}{done&&" ✓"}
                   </span>
@@ -943,17 +1191,285 @@ function GestorScreen({ roomCode }) {
                     {cur?"EN JUEGO":done?"COMPLETADA":"PENDIENTE"}
                   </Badge>
                 </div>
-                {Object.entries(pd).map(([pk,d])=>(
-                  <div key={pk} style={{fontSize:12,color:"#555",marginTop:4}}>
-                    {(d.jugadores||[]).map(p=>players?.[p]?.nickname||p).join(" vs ")}
-                    {d.resultado&&<span style={{color:"#22c55e"}}> → {d.resultado}</span>}
-                  </div>
-                ))}
+                {pairs.map(([pk,d])=>{
+                  const [pA,pB] = d.jugadores||[];
+                  const plA = players?.[pA], plB = players?.[pB];
+                  const ronda = d.ronda||1;
+                  const pub   = d.publicos||[];
+                  const ended = !!d.resultado;
+                  return (
+                    <div key={pk} style={{background:"#0f0f1a",borderRadius:10,padding:"10px 12px",
+                      marginTop:6,border:`1px solid ${ended?"#22c55e22":"#2a2a3a"}`}}>
+                      {/* Ronda + pozo */}
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                        <div style={{display:"flex",gap:4}}>
+                          {[1,2,3].map(r=>(
+                            <span key={r} style={{fontSize:10,fontWeight:700,padding:"2px 7px",borderRadius:6,
+                              background:ronda>r||ended?"#22c55e22":ronda===r?"#f9731622":"#1a1a2a",
+                              color:ronda>r||ended?"#22c55e":ronda===r?"#f97316":"#333"}}>
+                              R{r}{ronda>r||ended?" ✓":""}
+                            </span>
+                          ))}
+                        </div>
+                        <span style={{fontSize:11,color:"#a855f7",fontWeight:700}}>Pozo: {d.pot||2}</span>
+                      </div>
+                      {/* Jugadores lado a lado */}
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+                        {[[pA,plA],[pB,plB]].map(([pid,pl])=>{
+                          if (!pl) return null;
+                          const dice = d.dados?.[pid]||[];
+                          const fase = d.fases?.[pid]||"control";
+                          const fColor = {control:"#666",yo_trampo:"#eab308",rival_trampa:"#ef4444",ambos:"#a855f7"}[fase]||"#666";
+                          const fLabel = {control:"Ninguno",yo_trampo:"Yo trampo",rival_trampa:"Rival trampa",ambos:"Ambos"}[fase]||fase;
+                          return (
+                            <div key={pid}>
+                              <div style={{display:"flex",alignItems:"center",gap:5,marginBottom:5}}>
+                                <span style={{fontSize:14}}>{pl.avatar}</span>
+                                <span style={{color:pl.color,fontWeight:700,fontSize:12,flex:1,
+                                  overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                                  {pl.nickname}{pl.isBot?" 🤖":""}
+                                </span>
+                              </div>
+                              {/* Dados privados */}
+                              <div style={{display:"flex",gap:4,marginBottom:4}}>
+                                {dice.map((v,i)=><Die key={i} value={v} size={28} color={pl.color}/>)}
+                              </div>
+                              {/* Decisiones por ronda */}
+                              <div style={{display:"flex",gap:3,marginBottom:4}}>
+                                {[1,2,3].map(r=>{
+                                  const dec = d.decisiones?.[`${r}_${pid}`];
+                                  const isCur = r===ronda && !ended;
+                                  return (
+                                    <span key={r} style={{fontSize:10,padding:"1px 6px",borderRadius:4,fontWeight:700,
+                                      background:dec?(dec==="apostar"?"#22c55e22":"#ef444422"):(isCur?"#f9731615":"#1a1a2a"),
+                                      color:dec?(dec==="apostar"?"#22c55e":"#ef4444"):(isCur?"#f97316":"#333"),
+                                      border:`1px solid ${dec?(dec==="apostar"?"#22c55e33":"#ef444433"):(isCur?"#f9731633":"transparent")}`}}>
+                                      {dec?(dec==="apostar"?"💰":"🏳"):(isCur?"⏳":"·")}
+                                    </span>
+                                  );
+                                })}
+                              </div>
+                              {/* Fase */}
+                              <div style={{fontSize:9,color:fColor}}>{fLabel}</div>
+                              {/* Score si terminó */}
+                              {ended && d.scoreA!=null && (
+                                <div style={{fontSize:11,color:"#f97316",fontWeight:700,marginTop:3}}>
+                                  Top3: {(pid===pA?d.best3A:d.best3B||[]).join("+")} = {pid===pA?d.scoreA:d.scoreB}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                      {/* Dados públicos */}
+                      <div style={{display:"flex",alignItems:"center",gap:6,marginTop:8,
+                        borderTop:"1px solid #1e1e2e",paddingTop:6}}>
+                        <span style={{fontSize:10,color:"#555"}}>Públicos:</span>
+                        <div style={{display:"flex",gap:4}}>
+                          {pub.map((v,i)=>(
+                            <Die key={i} value={v} size={24} color="#22c55e"
+                              hidden={!ended && i>=ronda-1} glow={!ended && i<ronda-1}/>
+                          ))}
+                        </div>
+                      </div>
+                      {/* Resultado */}
+                      {ended&&<div style={{marginTop:6,color:"#22c55e",fontWeight:700,fontSize:12}}>{d.resultado}</div>}
+                    </div>
+                  );
+                })}
               </Card>
             );
           })}
         </div>
       )}
+
+      {/* ── STATS ── */}
+      {tab==="stats"&&(()=>{
+        const totalP = config?.totalPartidas||0;
+        const jugadas = Object.keys(partidas||{}).filter(k=>{
+          const pairs = Object.values(partidas[k]||{});
+          return pairs.length>0 && pairs.every(p=>p.resultado);
+        }).length;
+        const faltantes = Math.max(0, totalP - jugadas);
+        const enCurso  = phase==="playing" && jugadas < totalP ? 1 : 0;
+
+        const statsMap = {};
+        allPlayers.forEach(([uid,p])=>{
+          statsMap[uid] = { nick:p.nickname, avatar:p.avatar, color:p.color, isBot:!!p.isBot,
+            wins:0, losses:0, draws:0, played:0, bets:0, folds:0, totalEarned:0 };
+        });
+        Object.values(partidas||{}).forEach(partidaObj=>{
+          Object.values(partidaObj||{}).forEach(pd=>{
+            if (!pd.resultado) return;
+            const [pA,pB] = pd.jugadores||[];
+            [pA,pB].forEach(pid=>{
+              if (!statsMap[pid]) return;
+              statsMap[pid].played++;
+            });
+            const gan = pd.ganador;
+            if (gan==="casa") {
+              [pA,pB].forEach(pid=>{ if(statsMap[pid]) statsMap[pid].draws++; });
+            } else {
+              const loser = gan===pA?pB:pA;
+              if (statsMap[gan])  statsMap[gan].wins++;
+              if (statsMap[loser]) statsMap[loser].losses++;
+            }
+          });
+        });
+        logs.forEach(l=>{
+          if (!statsMap[l.jugador]) return;
+          if (l.accion==="apostar") statsMap[l.jugador].bets++;
+          if (l.accion==="retirarse") statsMap[l.jugador].folds++;
+        });
+        allPlayers.forEach(([uid])=>{
+          if (statsMap[uid]) statsMap[uid].totalEarned = (balance?.[uid]??10) - 10;
+        });
+
+        const sorted = Object.entries(statsMap).sort((a,b)=>(balance?.[b[0]]??10)-(balance?.[a[0]]??10));
+        const maxBal = Math.max(1, ...sorted.map(([uid])=>balance?.[uid]??10));
+        const maxWins= Math.max(1, ...sorted.map(([,s])=>s.wins));
+        const maxPlayed = Math.max(1, ...sorted.map(([,s])=>s.played));
+
+        return (
+          <div style={{display:"flex",flexDirection:"column",gap:12}}>
+            {/* Resumen general */}
+            <Card accent="#a855f7">
+              <div style={{fontSize:11,color:"#555",marginBottom:10}}>RESUMEN DEL EXPERIMENTO</div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8}}>
+                {[
+                  {label:"Jugadas",  val:jugadas,   color:"#22c55e"},
+                  {label:"En curso", val:enCurso,   color:"#f97316"},
+                  {label:"Faltantes",val:faltantes,  color:"#666"},
+                  {label:"Total",    val:totalP,     color:"#a855f7"},
+                ].map(s=>(
+                  <div key={s.label} style={{background:"#0f0f1a",borderRadius:10,padding:"10px 8px",textAlign:"center"}}>
+                    <div style={{fontSize:22,fontWeight:900,color:s.color}}>{s.val}</div>
+                    <div style={{fontSize:10,color:"#555",marginTop:2}}>{s.label}</div>
+                  </div>
+                ))}
+              </div>
+              {totalP>0&&(
+                <div style={{marginTop:10,background:"#1e1e2e",borderRadius:6,height:8}}>
+                  <div style={{width:`${(jugadas/totalP)*100}%`,background:"#22c55e",borderRadius:6,
+                    height:"100%",transition:"width 0.5s"}}/>
+                </div>
+              )}
+            </Card>
+
+            {/* Tabla de stats por jugador */}
+            <Card>
+              <div style={{fontSize:11,color:"#555",marginBottom:10}}>ESTADÍSTICAS POR JUGADOR</div>
+              <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                {sorted.map(([uid,s],i)=>{
+                  const bal = balance?.[uid]??10;
+                  const wr  = s.played ? Math.round((s.wins/s.played)*100) : 0;
+                  return (
+                    <div key={uid} style={{background:"#0f0f1a",borderRadius:10,padding:"10px 12px",
+                      border:`1px solid ${s.color}22`}}>
+                      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+                        <span style={{color:i===0?"#eab308":i===1?"#aaa":i===2?"#cd7f32":"#555",
+                          fontWeight:900,fontSize:14,width:20,textAlign:"center"}}>{i+1}</span>
+                        <span style={{fontSize:16}}>{s.avatar}</span>
+                        <span style={{color:s.color,fontWeight:700,fontSize:13,flex:1}}>
+                          {s.nick}{s.isBot?" 🤖":""}
+                        </span>
+                        <span style={{color:"#f97316",fontWeight:900,fontSize:15}}>💰 {bal}</span>
+                      </div>
+                      {/* Stats row */}
+                      <div style={{display:"flex",gap:12,fontSize:11,color:"#555",marginBottom:6}}>
+                        <span>🏆 <span style={{color:"#22c55e"}}>{s.wins}W</span></span>
+                        <span>💀 <span style={{color:"#ef4444"}}>{s.losses}L</span></span>
+                        <span>🏠 <span style={{color:"#a855f7"}}>{s.draws}D</span></span>
+                        <span>💰 <span style={{color:"#22c55e"}}>{s.bets}</span></span>
+                        <span>🏳 <span style={{color:"#ef4444"}}>{s.folds}</span></span>
+                        <span style={{marginLeft:"auto"}}>WR: <span style={{color:wr>=50?"#22c55e":"#ef4444",fontWeight:700}}>{wr}%</span></span>
+                      </div>
+                      {/* Bar: win rate */}
+                      <div style={{display:"flex",alignItems:"center",gap:6}}>
+                        <span style={{fontSize:10,color:"#444",width:18}}>WR</span>
+                        <div style={{flex:1,background:"#1e1e2e",borderRadius:4,height:6}}>
+                          <div style={{width:`${wr}%`,background:s.color,borderRadius:4,height:"100%",
+                            transition:"width 0.5s",minWidth:wr>0?4:0}}/>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+
+            {/* Gráfica de barras: fichas */}
+            <Card accent="#f97316">
+              <div style={{fontSize:11,color:"#555",marginBottom:12}}>FICHAS POR JUGADOR</div>
+              <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                {sorted.map(([uid,s])=>{
+                  const bal = balance?.[uid]??10;
+                  const pct = (bal/maxBal)*100;
+                  return (
+                    <div key={uid} style={{display:"flex",alignItems:"center",gap:8}}>
+                      <span style={{fontSize:12,width:20,textAlign:"center"}}>{s.avatar}</span>
+                      <span style={{color:s.color,fontWeight:700,fontSize:11,width:80,overflow:"hidden",
+                        textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.nick}</span>
+                      <div style={{flex:1,background:"#1e1e2e",borderRadius:4,height:14,position:"relative"}}>
+                        <div style={{width:`${pct}%`,background:s.color,borderRadius:4,height:"100%",
+                          transition:"width 0.5s",minWidth:bal>0?4:0}}/>
+                        <span style={{position:"absolute",right:6,top:0,fontSize:10,fontWeight:700,
+                          color:"#fff",lineHeight:"14px"}}>{bal}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+
+            {/* Gráfica de barras: victorias */}
+            <Card accent="#22c55e">
+              <div style={{fontSize:11,color:"#555",marginBottom:12}}>VICTORIAS POR JUGADOR</div>
+              <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                {sorted.map(([uid,s])=>{
+                  const pct = (s.wins/maxWins)*100;
+                  return (
+                    <div key={uid} style={{display:"flex",alignItems:"center",gap:8}}>
+                      <span style={{fontSize:12,width:20,textAlign:"center"}}>{s.avatar}</span>
+                      <span style={{color:s.color,fontWeight:700,fontSize:11,width:80,overflow:"hidden",
+                        textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.nick}</span>
+                      <div style={{flex:1,background:"#1e1e2e",borderRadius:4,height:14,position:"relative"}}>
+                        <div style={{width:`${pct}%`,background:"#22c55e",borderRadius:4,height:"100%",
+                          transition:"width 0.5s",minWidth:s.wins>0?4:0}}/>
+                        <span style={{position:"absolute",right:6,top:0,fontSize:10,fontWeight:700,
+                          color:"#fff",lineHeight:"14px"}}>{s.wins}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+
+            {/* Gráfica de barras: partidas jugadas */}
+            <Card accent="#3b82f6">
+              <div style={{fontSize:11,color:"#555",marginBottom:12}}>PARTIDAS JUGADAS POR JUGADOR</div>
+              <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                {sorted.map(([uid,s])=>{
+                  const pct = (s.played/maxPlayed)*100;
+                  return (
+                    <div key={uid} style={{display:"flex",alignItems:"center",gap:8}}>
+                      <span style={{fontSize:12,width:20,textAlign:"center"}}>{s.avatar}</span>
+                      <span style={{color:s.color,fontWeight:700,fontSize:11,width:80,overflow:"hidden",
+                        textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.nick}</span>
+                      <div style={{flex:1,background:"#1e1e2e",borderRadius:4,height:14,position:"relative"}}>
+                        <div style={{width:`${pct}%`,background:"#3b82f6",borderRadius:4,height:"100%",
+                          transition:"width 0.5s",minWidth:s.played>0?4:0}}/>
+                        <span style={{position:"absolute",right:6,top:0,fontSize:10,fontWeight:700,
+                          color:"#fff",lineHeight:"14px"}}>{s.played}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+          </div>
+        );
+      })()}
 
       {/* ── DATOS ── */}
       {tab==="datos"&&(
@@ -1021,7 +1537,7 @@ function GestorScreen({ roomCode }) {
           </Card>
 
           <BotConfig botCount={botCountL} setBotCount={setBotCountL}
-            botStrategy={botStratL} setBotStrategy={setBotStratL}/>
+            botStrategies={botStratsL} setBotStrategies={setBotStratsL}/>
           <Btn onClick={saveBotConfig} variant="success" style={{width:"100%"}}>
             Aplicar configuración de bots
           </Btn>
@@ -1040,7 +1556,7 @@ function GestorScreen({ roomCode }) {
 }
 
 // ─── PLAYER SCREEN ────────────────────────────────────────────────────────────
-function PlayerScreen({ roomCode, playerId, profile }) {
+function PlayerScreen({ roomCode, playerId, profile, onLeave }) {
   const [room,     setRoom]     = useState(null);
   const [decidido, setDecidido] = useState(false);
   const [overlay,  setOverlay]  = useState(null);
@@ -1049,7 +1565,16 @@ function PlayerScreen({ roomCode, playerId, profile }) {
   const prevPartidaRef  = useRef(null);
   const timerRef        = useRef(null);
   const resolvedRef     = useRef(new Set());
-  const autoFoldRef     = useRef(null); // para el timer de auto-apostar
+  const autoFoldRef     = useRef(null);
+  const cheatShownRef   = useRef(null);
+  const cheatTimerRef   = useRef(null);
+  const matchSoundRef   = useRef(null);
+  const resultSoundRef  = useRef(null);
+
+  const leaveGame = async () => {
+    await update(ref(db,`rooms/${roomCode}/players/${playerId}`),{ isBot:true, strategy:"ev_threshold" });
+    onLeave?.();
+  };
 
   useEffect(()=>{
     const r=ref(db,`rooms/${roomCode}`);
@@ -1067,6 +1592,8 @@ function PlayerScreen({ roomCode, playerId, profile }) {
     const myPair = getMyPair(room,n);
     if (!myPair) return;
     const ronda = myPair.ronda||1;
+    const fase  = myPair.fases?.[playerId]||"control";
+    const isCheat = fase==="yo_trampo"||fase==="ambos";
 
     if (prevRondaRef.current!==null && ronda!==prevRondaRef.current) {
       setDecidido(false);
@@ -1079,13 +1606,45 @@ function PlayerScreen({ roomCode, playerId, profile }) {
         setTimeout(()=>setOverlay(null),1800);
       }
     }
+
+    let nextDelay = 0;
     if (prevPartidaRef.current!==null && n!==prevPartidaRef.current && n>0) {
       setDecidido(false);
       resolvedRef.current.clear();
       clearTimeout(autoFoldRef.current);
+      clearTimeout(cheatTimerRef.current);
       setOverlay({type:"next",msg:`⚔️ ¡Partida ${n} comenzando!`});
       setTimeout(()=>setOverlay(null),1800);
+      nextDelay = 2100;
     }
+
+    if (isCheat && cheatShownRef.current!==n) {
+      cheatShownRef.current = n;
+      const msg = fase==="ambos"
+        ? "¡Ambos con ventaja!\nTú y tu rival pueden espiar un dado del otro"
+        : "¡Tienes ventaja secreta!\nPuedes ver uno de los dados privados de tu rival";
+      cheatTimerRef.current = setTimeout(()=>{
+        setOverlay({type:"cheat",msg});
+        setTimeout(()=>setOverlay(null),3000);
+      }, nextDelay||400);
+    }
+
+    // Sonido al entrar a nueva partida
+    if (n>0 && !myPair.resultado && matchSoundRef.current!==n) {
+      matchSoundRef.current = n;
+      soundNewMatch();
+    }
+    // Sonido al ganar/perder
+    const res = myPair.resultado||null;
+    const gan = myPair.ganador||null;
+    if (res) {
+      const rk = `${n}_result`;
+      if (resultSoundRef.current!==rk) {
+        resultSoundRef.current = rk;
+        if (gan===playerId) soundWin(); else soundLose();
+      }
+    }
+
     prevRondaRef.current   = ronda;
     prevPartidaRef.current = n;
   },[room]);
@@ -1201,6 +1760,9 @@ function PlayerScreen({ roomCode, playerId, profile }) {
   if (phase==="lobby"||phase==="finished") return (
     <div style={{maxWidth:420,margin:"0 auto",padding:"48px 20px",textAlign:"center"}}>
       <GlobalCSS/>
+      <div style={{display:"flex",justifyContent:"flex-end"}}>
+        <PlayerMenu onLeave={leaveGame} players={players} balance={balance} playerId={playerId} roomCode={roomCode}/>
+      </div>
       <div style={{fontSize:64,display:"inline-block",animation:"float 3s ease-in-out infinite"}}>
         {phase==="finished"?"🏆":"🎃"}
       </div>
@@ -1339,6 +1901,29 @@ function PlayerScreen({ roomCode, playerId, profile }) {
         </div>
       </Overlay>
 
+      <Overlay show={overlay?.type==="cheat"}>
+        <div style={{textAlign:"center",animation:"popIn 0.4s ease"}}>
+          <div style={{background:"#1a1a0a",border:"2px solid #eab308",borderRadius:20,
+            padding:"36px 32px",maxWidth:320,animation:"cheatGlow 1.5s ease infinite"}}>
+            <div style={{fontSize:72,animation:"cheatIcon 0.6s ease both"}}>👁️</div>
+            <div style={{color:"#eab308",fontWeight:900,fontSize:22,marginTop:12,lineHeight:1.4,
+              textShadow:"0 0 20px #eab30866"}}>
+              {(overlay?.msg||"").split("\n").map((l,i)=><div key={i}>{l}</div>)}
+            </div>
+            <div style={{marginTop:16,display:"flex",gap:6,justifyContent:"center"}}>
+              <Die value={3} size={40} color="#eab308" glow/>
+              <Die value={0} hidden size={40}/>
+            </div>
+            <div style={{color:"#eab30888",fontSize:11,marginTop:10}}>
+              Mira la sección del rival más abajo
+            </div>
+          </div>
+        </div>
+      </Overlay>
+
+      <div style={{display:"flex",justifyContent:"flex-end",marginBottom:4}}>
+        <PlayerMenu onLeave={leaveGame} players={players} balance={balance} playerId={playerId} roomCode={roomCode}/>
+      </div>
       <PlayerHeader profile={profile} balance={myBal} roomCode={roomCode} partida={n} total={config?.totalPartidas}/>
 
       {/* Timer circular */}
@@ -1413,9 +1998,8 @@ function PlayerScreen({ roomCode, playerId, profile }) {
         </div>
         <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
           {rivalInfo&&<>
-            <span style={{fontSize:24}}>{rivalInfo.isBot?"🤖":rivalInfo.avatar}</span>
+            <span style={{fontSize:24}}>{rivalInfo.avatar}</span>
             <span style={{color:rivalInfo.color,fontWeight:700}}>{rivalInfo.nickname}</span>
-            {rivalInfo.isBot&&<Badge color="#22c55e">BOT</Badge>}
           </>}
           {rivDecidio&&!yaDecidio&&<Badge color="#22c55e">✓ Ya decidió</Badge>}
         </div>
@@ -1452,6 +2036,114 @@ function PlayerScreen({ roomCode, playerId, profile }) {
         </Card>
       )}
     </div>
+  );
+}
+
+function PlayerMenu({ onLeave, players, balance, playerId, roomCode }) {
+  const [open, setOpen]       = useState(false);
+  const [panel, setPanel]     = useState(null);
+  const menuRef               = useRef(null);
+
+  useEffect(()=>{
+    if (!open) return;
+    const close = e => { if (menuRef.current && !menuRef.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", close);
+    return ()=>document.removeEventListener("mousedown", close);
+  },[open]);
+
+  const toggleFS = () => {
+    if (!document.fullscreenElement) document.documentElement.requestFullscreen?.();
+    else document.exitFullscreen?.();
+    setOpen(false);
+  };
+
+  const sorted = Object.entries(players||{})
+    .filter(([k])=>k!=="gestor")
+    .map(([uid,p])=>({...p, uid, bal:balance?.[uid]??10}))
+    .sort((a,b)=>b.bal-a.bal);
+
+  const items = [
+    {label:"Reglas del juego", icon:"📖", action:()=>{ setPanel("rules");  setOpen(false); }},
+    {label:"Ranking",          icon:"🏅", action:()=>{ setPanel("ranking");setOpen(false); }},
+    {label:"Pantalla completa",icon:"⛶",  action:toggleFS},
+    {label:"Salir del juego",  icon:"🚪", action:()=>{ setPanel("confirm");setOpen(false); }, danger:true},
+  ];
+
+  return (
+    <>
+      <div ref={menuRef} style={{position:"relative",zIndex:100}}>
+        <button onClick={()=>setOpen(o=>!o)} style={{background:"none",border:"1px solid #2a2a3a",
+          borderRadius:8,padding:"4px 8px",cursor:"pointer",fontSize:18,lineHeight:1,color:"#666"}}>☰</button>
+        {open&&(
+          <div style={{position:"absolute",right:0,top:"110%",background:"#1a1a2a",border:"1px solid #2a2a3a",
+            borderRadius:12,padding:6,minWidth:200,boxShadow:"0 8px 32px #000a",animation:"fadeIn 0.15s ease"}}>
+            {items.map(it=>(
+              <button key={it.label} onClick={it.action} style={{display:"flex",alignItems:"center",gap:10,
+                width:"100%",background:"none",border:"none",borderRadius:8,padding:"10px 12px",
+                cursor:"pointer",color:it.danger?"#ef4444":"#ccc",fontSize:13,fontFamily:"inherit",
+                textAlign:"left",fontWeight:it.danger?700:400}}>
+                <span style={{fontSize:16,width:22,textAlign:"center"}}>{it.icon}</span>{it.label}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <Overlay show={panel==="rules"}>
+        <Card style={{maxWidth:380,padding:28,maxHeight:"85vh",overflowY:"auto",animation:"popIn 0.3s ease"}}>
+          <h3 style={{color:"#f97316",marginTop:0,marginBottom:12}}>📖 Reglas del juego</h3>
+          {[
+            ["🎲 Dados","Recibes 2 dados privados. Hay 2 dados públicos compartidos que se revelan uno por ronda."],
+            ["🏆 Top 3","De tus 2 dados + los públicos visibles, se toman los 3 de mayor valor. Tu score es su suma (máx 18)."],
+            ["💰 Rondas","Hay 3 rondas. En cada una decides: apostar (+1 ficha al pozo) o retirarte."],
+            ["🏠 Retirarse","Si te retiras, el rival gana el pozo. Si ambos se retiran, la casa gana."],
+            ["⚖️ Empate","Si ambos apuestan las 3 rondas y el score es igual, la casa gana el pozo."],
+            ["👁️ Fases","En algunas partidas puedes ver un dado del rival (o él ve el tuyo). Esto es parte del experimento."],
+          ].map(([t,d])=>(
+            <div key={t} style={{marginBottom:10}}>
+              <div style={{color:"#aaa",fontWeight:700,fontSize:13}}>{t}</div>
+              <div style={{color:"#666",fontSize:12,lineHeight:1.5}}>{d}</div>
+            </div>
+          ))}
+          <Btn onClick={()=>setPanel(null)} style={{width:"100%",marginTop:8}}>Cerrar</Btn>
+        </Card>
+      </Overlay>
+
+      <Overlay show={panel==="ranking"}>
+        <Card style={{maxWidth:360,padding:24,maxHeight:"85vh",overflowY:"auto",animation:"popIn 0.3s ease"}}>
+          <h3 style={{color:"#f97316",marginTop:0,marginBottom:12}}>🏅 Ranking</h3>
+          {sorted.map((p,i)=>(
+            <div key={p.uid} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",
+              borderBottom:"1px solid #1e1e2e"}}>
+              <span style={{color:i===0?"#eab308":i===1?"#aaa":i===2?"#cd7f32":"#555",
+                fontWeight:900,fontSize:16,width:24,textAlign:"center"}}>{i+1}</span>
+              <span style={{fontSize:20}}>{p.avatar}</span>
+              <div style={{flex:1}}>
+                <div style={{color:p.uid===playerId?p.color:"#aaa",fontWeight:700,fontSize:13}}>
+                  {p.nickname}{p.uid===playerId?" (tú)":""}
+                </div>
+              </div>
+              <span style={{color:"#f97316",fontWeight:900,fontSize:15}}>💰 {p.bal}</span>
+            </div>
+          ))}
+          <Btn onClick={()=>setPanel(null)} style={{width:"100%",marginTop:14}}>Cerrar</Btn>
+        </Card>
+      </Overlay>
+
+      <Overlay show={panel==="confirm"}>
+        <Card style={{maxWidth:320,padding:28,textAlign:"center",animation:"popIn 0.3s ease"}}>
+          <div style={{fontSize:48,marginBottom:8}}>🚪</div>
+          <h3 style={{color:"#ef4444",marginTop:0}}>¿Salir del juego?</h3>
+          <p style={{color:"#666",fontSize:13,marginBottom:20}}>
+            Un bot tomará tu lugar y seguirá jugando por ti.
+          </p>
+          <div style={{display:"flex",gap:10}}>
+            <Btn onClick={()=>setPanel(null)} variant="ghost" style={{flex:1}}>Cancelar</Btn>
+            <Btn onClick={onLeave} variant="danger" style={{flex:1}}>Salir</Btn>
+          </div>
+        </Card>
+      </Overlay>
+    </>
   );
 }
 
@@ -1546,7 +2238,7 @@ function JoinFlow({ roomCode, onBack }) {
 
   if (step==="play") {
     if (role==="gestor") return <GestorScreen roomCode={roomCode}/>;
-    return <PlayerScreen roomCode={roomCode} playerId={uid} profile={profile}/>;
+    return <PlayerScreen roomCode={roomCode} playerId={uid} profile={profile} onLeave={onBack}/>;
   }
 }
 
