@@ -777,6 +777,36 @@ function GestorScreen({ roomCode }) {
     });
   },[room?.partidas, room?.players]);
 
+  // Resolver rondas donde ambos jugadores ya decidieron pero nadie resolvió
+  const resolveWatchRef = useRef(new Set());
+  useEffect(()=>{
+    if (!room||room.status?.phase!=="playing") return;
+    const n = room.status?.partidaActual||0;
+    const pData = room.partidas?.[n];
+    if (!pData) return;
+    Object.entries(pData).forEach(([pairKey,pd])=>{
+      if (pd.resultado) return;
+      const ronda = pd.ronda||1;
+      if (ronda>3) return;
+      const [pidA,pidB] = pd.jugadores||[];
+      const decA = pd.decisiones?.[`${ronda}_${pidA}`];
+      const decB = pd.decisiones?.[`${ronda}_${pidB}`];
+      if (!decA||!decB) return;
+      const rk = `${n}_${pairKey}_${ronda}`;
+      if (resolveWatchRef.current.has(rk)) return;
+      resolveWatchRef.current.add(rk);
+      (async ()=>{
+        await sleep(500);
+        const snap = await get(ref(db,`rooms/${roomCode}/partidas/${n}/${pairKey}`));
+        if (!snap.exists()) return;
+        const fresh = snap.val();
+        if (fresh.resultado||(fresh.ronda||1)!==ronda) return;
+        const rSnap = await get(ref(db,`rooms/${roomCode}`));
+        await resolveRondaDB(roomCode,rSnap.val(),n,pairKey,fresh,ronda,pidA,decA,pidB,decB);
+      })();
+    });
+  },[room?.partidas]);
+
   const openRoom  = ()=>update(ref(db,`rooms/${roomCode}/config`),{open:true});
   const closeRoom = ()=>update(ref(db,`rooms/${roomCode}/config`),{open:false});
 
@@ -1620,9 +1650,7 @@ function PlayerScreen({ roomCode, playerId, profile, onLeave }) {
 
     if (isCheat && cheatShownRef.current!==n) {
       cheatShownRef.current = n;
-      const msg = fase==="ambos"
-        ? "¡Ambos con ventaja!\nTú y tu rival pueden espiar un dado del otro"
-        : "¡Tienes ventaja secreta!\nPuedes ver uno de los dados privados de tu rival";
+      const msg = "¡Tienes ventaja secreta!\nPuedes ver uno de los dados privados de tu rival";
       cheatTimerRef.current = setTimeout(()=>{
         setOverlay({type:"cheat",msg});
         setTimeout(()=>setOverlay(null),3000);
