@@ -994,25 +994,46 @@ function GestorScreen({ roomCode }) {
   const saveConfig = ()=>update(ref(db,`rooms/${roomCode}/config`),cfgLocal);
 
   const exportCSV = ()=>{
-    const pl = room?.players||{};
+    const pl  = room?.players||{};
     const bal = room?.balance||{};
     const pts = room?.partidas||{};
     const rawLogs = Object.values(room?.logs||{}).sort((a,b)=>a.ts-b.ts);
 
     const cols = [
+      // Identificadores
       "sala","partida","par","ronda",
-      "jugador_id","jugador_nick","jugador_avatar","jugador_es_bot",
-      "rival_id","rival_nick","rival_es_bot",
+      // Jugador
+      "jugador_id","jugador_nick","jugador_es_bot","jugador_estrategia",
+      // Rival
+      "rival_id","rival_nick","rival_es_bot","rival_estrategia",
+      // Estado (antes "fase")
+      "estado_jugador","estado_rival",
+      // Flags booleanos para filtrado rápido en R
+      "jugador_tiene_ventaja","rival_tiene_ventaja","ambos_ventaja","estado_limpio",
+      // Dados
+      "dado_priv_1","dado_priv_2","suma_privados",
+      "rival_priv_1","rival_priv_2","suma_rival_privados",
+      "dado_pub_1","dado_pub_2","n_publicos_visibles",
+      // Score en esta ronda
+      "top3_score_ronda","top3_dados_ronda",
+      "rival_top3_score_ronda","rival_top3_dados_ronda",
+      // Probabilidades Monte Carlo
+      "prob_victoria","prob_victoria_rival",
+      // Decisiones
       "decision","rival_decision",
-      "dado_priv_1","dado_priv_2","rival_dado_priv_1","rival_dado_priv_2",
-      "dado_pub_1","dado_pub_2","dados_pub_visibles",
-      "top3_score","ev",
-      "fase_jugador","fase_rival",
-      "pozo","tiempo_ms",
-      "partida_ganador_id","partida_ganador_nick","partida_resultado","partida_motivo",
+      "decision_apostar","rival_decision_apostar",
+      "tiempo_decision_ms",
+      // Resultado de la partida (mismo en todas las rondas del par)
+      "pozo_final","ronda_final",
+      "ganador_id","ganador_nick","gano_jugador","gano_rival","gano_casa",
+      "motivo",
+      // Scores finales (ronda 3)
       "score_final_jugador","score_final_rival",
-      "best3_jugador","best3_rival",
-      "balance_jugador","balance_rival",
+      "best3_final_jugador","best3_final_rival",
+      // Balance
+      "balance_final_jugador","balance_final_rival",
+      "ganancia_neta_jugador",
+      // Metadata
       "timestamp",
     ];
 
@@ -1021,10 +1042,11 @@ function GestorScreen({ roomCode }) {
       return s.includes(",") || s.includes('"') || s.includes("\n")
         ? '"' + s.replace(/"/g, '""') + '"' : s;
     };
+    const B = v => v ? "TRUE" : "FALSE";
 
     const rows = [];
-
     const sortedPartidas = Object.keys(pts).map(Number).sort((a,b)=>a-b);
+
     sortedPartidas.forEach(nPart => {
       Object.entries(pts[nPart]||{}).forEach(([pairKey, pd]) => {
         const [pA,pB] = pd.jugadores||[];
@@ -1032,58 +1054,76 @@ function GestorScreen({ roomCode }) {
         const ganador = pd.ganador||"";
         const resultado = pd.resultado||"";
         const motivo = resultado.includes("Empate") ? "empate"
-          : resultado.includes("retirar") || resultado.includes("Retirada") ? "retiro"
+          : resultado.includes("retirar")||resultado.includes("Retirada") ? "retiro"
           : resultado.includes("Tres unos") ? "tres_unos"
           : resultado.includes("Mayor suma") ? "mayor_suma"
           : resultado.includes("Casa") ? "casa" : "";
+
+        // Determinar ronda final (última ronda con decisiones)
+        let rondaFinal = 0;
+        for (let r=3; r>=1; r--) {
+          if (pd.decisiones?.[`${r}_${pA}`] || pd.decisiones?.[`${r}_${pB}`]) { rondaFinal=r; break; }
+        }
 
         [pA,pB].forEach(pid => {
           const rival = pid===pA ? pB : pA;
           const pInfo = pl[pid]||{};
           const rInfo = pl[rival]||{};
-          const myDice = pd.dados?.[pid]||[];
+          const myDice  = pd.dados?.[pid]||[];
           const rivDice = pd.dados?.[rival]||[];
-          const faseJ = pd.fases?.[pid]||"control";
-          const faseR = pd.fases?.[rival]||"control";
-          const isJugA = pid===pA;
-          const scoreFJ = isJugA ? pd.scoreA : pd.scoreB;
-          const scoreFR = isJugA ? pd.scoreB : pd.scoreA;
-          const best3J = isJugA ? pd.best3A : pd.best3B;
-          const best3R = isJugA ? pd.best3B : pd.best3A;
+          const estJ = pd.fases?.[pid]||"control";
+          const estR = pd.fases?.[rival]||"control";
+          const tieneVentaja  = estJ==="yo_trampo"||estJ==="ambos";
+          const rivalVentaja  = estR==="yo_trampo"||estR==="ambos";
+          const ambosVentaja  = estJ==="ambos";
+          const estadoLimpio  = estJ==="control";
+          const isJugA   = pid===pA;
+          const scoreFJ  = isJugA ? pd.scoreA : pd.scoreB;
+          const scoreFR  = isJugA ? pd.scoreB : pd.scoreA;
+          const best3J   = isJugA ? pd.best3A : pd.best3B;
+          const best3R   = isJugA ? pd.best3B : pd.best3A;
+          const balFinal = bal[pid]??10;
+          const ganNeta  = balFinal - 10;
 
           for (let ronda=1; ronda<=3; ronda++) {
-            const decKey = `${ronda}_${pid}`;
-            const dec = pd.decisiones?.[decKey];
+            const dec = pd.decisiones?.[`${ronda}_${pid}`];
             if (dec===undefined) continue;
-
-            const rivDecKey = `${ronda}_${rival}`;
-            const rivDec = pd.decisiones?.[rivDecKey]||"";
+            const rivDec = pd.decisiones?.[`${ronda}_${rival}`]||"";
 
             const pubVis = pub.slice(0, ronda-1);
-            const { score } = top3score(myDice, pubVis);
-            const ev = calcEV(myDice, pubVis);
+            const myT3   = top3score(myDice, pubVis);
+            const rivT3  = top3score(rivDice, pubVis);
+            const wp     = estimateWinProb(myDice, pubVis, 300, tieneVentaja?[rivDice[0]]:[]);
+            const wpR    = estimateWinProb(rivDice, pubVis, 300, rivalVentaja?[myDice[0]]:[]);
 
             const logMatch = rawLogs.find(l =>
               l.partida===nPart && l.jugador===pid && l.ronda===ronda && l.accion===dec && l.pairKey===pairKey
             );
-            const tiempo = logMatch?.tiempo_ms ?? "";
-            const ts = logMatch?.ts ?? "";
 
             rows.push([
               roomCode, nPart, pairKey, ronda,
-              pid, pInfo.nickname||pid, pInfo.avatar||"", pInfo.isBot?"TRUE":"FALSE",
-              rival, rInfo.nickname||rival, rInfo.isBot?"TRUE":"FALSE",
-              dec, rivDec,
-              myDice[0]??"", myDice[1]??"", rivDice[0]??"", rivDice[1]??"",
+              pid, pInfo.nickname||pid, B(pInfo.isBot), pInfo.strategy||"",
+              rival, rInfo.nickname||rival, B(rInfo.isBot), rInfo.strategy||"",
+              estJ, estR,
+              B(tieneVentaja), B(rivalVentaja), B(ambosVentaja), B(estadoLimpio),
+              myDice[0]??"", myDice[1]??"", myDice.reduce((a,b)=>a+b,0),
+              rivDice[0]??"", rivDice[1]??"", rivDice.reduce((a,b)=>a+b,0),
               pub[0]??"", pub[1]??"", ronda-1,
-              score, (ev*100).toFixed(1),
-              faseJ, faseR,
-              pd.pot||2, tiempo,
-              ganador, ganador==="casa"?"casa":(pl[ganador]?.nickname||ganador), resultado, motivo,
+              myT3.score, myT3.best3.join("+"),
+              rivT3.score, rivT3.best3.join("+"),
+              (wp*100).toFixed(1), (wpR*100).toFixed(1),
+              dec, rivDec,
+              B(dec==="apostar"), B(rivDec==="apostar"),
+              logMatch?.tiempo_ms??"",
+              pd.pot||2, rondaFinal,
+              ganador, ganador==="casa"?"casa":(pl[ganador]?.nickname||ganador),
+              B(ganador===pid), B(ganador===rival), B(ganador==="casa"),
+              motivo,
               scoreFJ??"", scoreFR??"",
               (best3J||[]).join("+"), (best3R||[]).join("+"),
-              bal[pid]??10, bal[rival]??10,
-              ts,
+              balFinal, bal[rival]??10,
+              ganNeta,
+              logMatch?.ts??"",
             ].map(esc).join(","));
           }
         });
