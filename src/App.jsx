@@ -421,10 +421,10 @@ function CreateRoomScreen({ onCreated }) {
             const q=Math.floor(v/4)||1; setCfg({control:q,yo_trampo:q,rival_trampa:q,ambos:v-3*q}); }}
           style={{width:"100%",marginBottom:20,accentColor:"#f97316"}}/>
         <div style={{fontSize:13,color:"#777",marginBottom:10}}>
-          Fases <span style={{color:suma===total?"#22c55e":"#ef4444",fontWeight:700}}>({suma}/{total})</span>
+          Estados <span style={{color:suma===total?"#22c55e":"#ef4444",fontWeight:700}}>({suma}/{total})</span>
         </div>
         {[
-          {k:"control",      label:"🎯 Ninguno tramposo",   color:"#aaa"},
+          {k:"control",      label:"🎯 Estado limpio",       color:"#aaa"},
           {k:"yo_trampo",    label:"🃏 Yo tramposo",        color:"#eab308"},
           {k:"rival_trampa", label:"👁️ Rival tramposo",     color:"#ef4444"},
           {k:"ambos",        label:"⚔️ Ambos tramposos",    color:"#a855f7"},
@@ -1232,7 +1232,7 @@ function GestorScreen({ roomCode }) {
                         R{pd.ronda}: {pd.decisiones?.[`${pd.ronda}_${pid}`]||"⏳"}
                       </div>
                       <div style={{fontSize:11,color:"#555",marginTop:2}}>
-                        Fase: <span style={{color:"#aaa"}}>{pd.fases?.[pid]||"-"}</span>
+                        Estado: <span style={{color:"#aaa"}}>{pd.fases?.[pid]||"-"}</span>
                       </div>
                     </div>
                   ))}
@@ -1303,7 +1303,7 @@ function GestorScreen({ roomCode }) {
                           const dice = d.dados?.[pid]||[];
                           const fase = d.fases?.[pid]||"control";
                           const fColor = {control:"#666",yo_trampo:"#eab308",rival_trampa:"#ef4444",ambos:"#a855f7"}[fase]||"#666";
-                          const fLabel = {control:"Ninguno",yo_trampo:"Yo trampo",rival_trampa:"Rival trampa",ambos:"Ambos"}[fase]||fase;
+                          const fLabel = {control:"Limpio",yo_trampo:"Yo trampo",rival_trampa:"Rival trampa",ambos:"Ambos trampa"}[fase]||fase;
                           return (
                             <div key={pid}>
                               <div style={{display:"flex",alignItems:"center",gap:5,marginBottom:5}}>
@@ -1376,10 +1376,18 @@ function GestorScreen({ roomCode }) {
         const faltantes = Math.max(0, totalP - jugadas);
         const enCurso  = phase==="playing" && jugadas < totalP ? 1 : 0;
 
+        const ESTADOS = [
+          {id:"control",      label:"Limpio",         color:"#aaa"},
+          {id:"yo_trampo",    label:"Yo tramposo",    color:"#eab308"},
+          {id:"rival_trampa", label:"Rival tramposo", color:"#ef4444"},
+          {id:"ambos",        label:"Ambos tramposos",color:"#a855f7"},
+        ];
         const statsMap = {};
         allPlayers.forEach(([uid,p])=>{
-          statsMap[uid] = { nick:p.nickname, avatar:p.avatar, color:p.color, isBot:!!p.isBot,
-            wins:0, losses:0, draws:0, played:0, bets:0, folds:0, totalEarned:0 };
+          const base = { nick:p.nickname, avatar:p.avatar, color:p.color, isBot:!!p.isBot,
+            wins:0, losses:0, draws:0, played:0, bets:0, folds:0 };
+          ESTADOS.forEach(e=>{ base[`w_${e.id}`]=0; base[`l_${e.id}`]=0; });
+          statsMap[uid] = base;
         });
         Object.values(partidas||{}).forEach(partidaObj=>{
           Object.values(partidaObj||{}).forEach(pd=>{
@@ -1394,8 +1402,8 @@ function GestorScreen({ roomCode }) {
               [pA,pB].forEach(pid=>{ if(statsMap[pid]) statsMap[pid].draws++; });
             } else {
               const loser = gan===pA?pB:pA;
-              if (statsMap[gan])  statsMap[gan].wins++;
-              if (statsMap[loser]) statsMap[loser].losses++;
+              if (statsMap[gan])  { statsMap[gan].wins++;  statsMap[gan][`w_${pd.fases?.[gan]||"control"}`]++; }
+              if (statsMap[loser]){ statsMap[loser].losses++; statsMap[loser][`l_${pd.fases?.[loser]||"control"}`]++; }
             }
           });
         });
@@ -1404,14 +1412,31 @@ function GestorScreen({ roomCode }) {
           if (l.accion==="apostar") statsMap[l.jugador].bets++;
           if (l.accion==="retirarse") statsMap[l.jugador].folds++;
         });
-        allPlayers.forEach(([uid])=>{
-          if (statsMap[uid]) statsMap[uid].totalEarned = (balance?.[uid]??10) - 10;
-        });
 
         const sorted = Object.entries(statsMap).sort((a,b)=>(balance?.[b[0]]??10)-(balance?.[a[0]]??10));
         const maxBal = Math.max(1, ...sorted.map(([uid])=>balance?.[uid]??10));
-        const maxWins= Math.max(1, ...sorted.map(([,s])=>s.wins));
-        const maxPlayed = Math.max(1, ...sorted.map(([,s])=>s.played));
+
+        // Aggregate by estado for the experiment-level chart
+        const byEstado = {};
+        ESTADOS.forEach(e=>{ byEstado[e.id]={wins:0,losses:0,draws:0,total:0}; });
+        Object.values(partidas||{}).forEach(partidaObj=>{
+          Object.values(partidaObj||{}).forEach(pd=>{
+            if (!pd.resultado) return;
+            const [pA,pB] = pd.jugadores||[];
+            const gan = pd.ganador;
+            [pA,pB].forEach(pid=>{
+              const est = pd.fases?.[pid]||"control";
+              if (!byEstado[est]) return;
+              byEstado[est].total++;
+              if (gan==="casa") byEstado[est].draws++;
+              else if (gan===pid) byEstado[est].wins++;
+              else byEstado[est].losses++;
+            });
+          });
+        });
+
+        const chartH = 180;
+        const maxRate = 100;
 
         return (
           <div style={{display:"flex",flexDirection:"column",gap:12}}>
@@ -1439,9 +1464,9 @@ function GestorScreen({ roomCode }) {
               )}
             </Card>
 
-            {/* Tabla de stats por jugador */}
+            {/* Tabla por jugador */}
             <Card>
-              <div style={{fontSize:11,color:"#555",marginBottom:10}}>ESTADÍSTICAS POR JUGADOR</div>
+              <div style={{fontSize:11,color:"#555",marginBottom:10}}>RANKING DE JUGADORES</div>
               <div style={{display:"flex",flexDirection:"column",gap:6}}>
                 {sorted.map(([uid,s],i)=>{
                   const bal = balance?.[uid]??10;
@@ -1458,21 +1483,16 @@ function GestorScreen({ roomCode }) {
                         </span>
                         <span style={{color:"#f97316",fontWeight:900,fontSize:15}}>💰 {bal}</span>
                       </div>
-                      {/* Stats row */}
-                      <div style={{display:"flex",gap:12,fontSize:11,color:"#555",marginBottom:6}}>
-                        <span>🏆 <span style={{color:"#22c55e"}}>{s.wins}W</span></span>
-                        <span>💀 <span style={{color:"#ef4444"}}>{s.losses}L</span></span>
-                        <span>🏠 <span style={{color:"#a855f7"}}>{s.draws}D</span></span>
-                        <span>💰 <span style={{color:"#22c55e"}}>{s.bets}</span></span>
-                        <span>🏳 <span style={{color:"#ef4444"}}>{s.folds}</span></span>
-                        <span style={{marginLeft:"auto"}}>WR: <span style={{color:wr>=50?"#22c55e":"#ef4444",fontWeight:700}}>{wr}%</span></span>
+                      <div style={{display:"flex",gap:10,fontSize:11,color:"#555",marginBottom:6,flexWrap:"wrap"}}>
+                        <span>🏆<span style={{color:"#22c55e"}}>{s.wins}W</span></span>
+                        <span>💀<span style={{color:"#ef4444"}}>{s.losses}L</span></span>
+                        <span>🏠<span style={{color:"#a855f7"}}>{s.draws}D</span></span>
+                        <span style={{marginLeft:"auto"}}>WR:<span style={{color:wr>=50?"#22c55e":"#ef4444",fontWeight:700}}>{wr}%</span></span>
                       </div>
-                      {/* Bar: win rate */}
                       <div style={{display:"flex",alignItems:"center",gap:6}}>
-                        <span style={{fontSize:10,color:"#444",width:18}}>WR</span>
                         <div style={{flex:1,background:"#1e1e2e",borderRadius:4,height:6}}>
-                          <div style={{width:`${wr}%`,background:s.color,borderRadius:4,height:"100%",
-                            transition:"width 0.5s",minWidth:wr>0?4:0}}/>
+                          <div style={{width:`${(bal/maxBal)*100}%`,background:s.color,borderRadius:4,height:"100%",
+                            transition:"width 0.5s",minWidth:bal>0?4:0}}/>
                         </div>
                       </div>
                     </div>
@@ -1481,7 +1501,111 @@ function GestorScreen({ roomCode }) {
               </div>
             </Card>
 
-            {/* Gráfica de barras: fichas */}
+            {/* Victorias por estado */}
+            <Card accent="#22c55e">
+              <div style={{fontSize:11,color:"#555",marginBottom:10}}>VICTORIAS POR ESTADO</div>
+              {sorted.map(([uid,s])=>(
+                <div key={uid} style={{marginBottom:10}}>
+                  <div style={{fontSize:12,color:s.color,fontWeight:700,marginBottom:4}}>
+                    {s.avatar} {s.nick}{s.isBot?" 🤖":""}
+                  </div>
+                  <div style={{display:"flex",gap:4}}>
+                    {ESTADOS.map(e=>{
+                      const v = s[`w_${e.id}`]||0;
+                      return (
+                        <div key={e.id} style={{flex:1,textAlign:"center"}}>
+                          <div style={{background:"#1e1e2e",borderRadius:4,height:20,position:"relative",overflow:"hidden"}}>
+                            <div style={{width:`${v?Math.max((v/Math.max(1,s.wins))*100,12):0}%`,
+                              background:e.color,borderRadius:4,height:"100%",transition:"width 0.5s"}}/>
+                            <span style={{position:"absolute",inset:0,fontSize:10,fontWeight:700,
+                              color:"#fff",lineHeight:"20px"}}>{v}</span>
+                          </div>
+                          <div style={{fontSize:8,color:e.color,marginTop:2}}>{e.label}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </Card>
+
+            {/* Derrotas por estado */}
+            <Card accent="#ef4444">
+              <div style={{fontSize:11,color:"#555",marginBottom:10}}>DERROTAS POR ESTADO</div>
+              {sorted.map(([uid,s])=>(
+                <div key={uid} style={{marginBottom:10}}>
+                  <div style={{fontSize:12,color:s.color,fontWeight:700,marginBottom:4}}>
+                    {s.avatar} {s.nick}{s.isBot?" 🤖":""}
+                  </div>
+                  <div style={{display:"flex",gap:4}}>
+                    {ESTADOS.map(e=>{
+                      const v = s[`l_${e.id}`]||0;
+                      return (
+                        <div key={e.id} style={{flex:1,textAlign:"center"}}>
+                          <div style={{background:"#1e1e2e",borderRadius:4,height:20,position:"relative",overflow:"hidden"}}>
+                            <div style={{width:`${v?Math.max((v/Math.max(1,s.losses))*100,12):0}%`,
+                              background:e.color,borderRadius:4,height:"100%",transition:"width 0.5s"}}/>
+                            <span style={{position:"absolute",inset:0,fontSize:10,fontWeight:700,
+                              color:"#fff",lineHeight:"20px"}}>{v}</span>
+                          </div>
+                          <div style={{fontSize:8,color:e.color,marginTop:2}}>{e.label}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </Card>
+
+            {/* Gráfico: ¿Hacer trampa beneficia? Win rate por estado */}
+            <Card accent="#eab308">
+              <div style={{fontSize:11,color:"#555",marginBottom:4}}>¿HACER TRAMPA BENEFICIA?</div>
+              <div style={{fontSize:10,color:"#444",marginBottom:12}}>Win rate (%) por estado — responde si la ventaja informacional se traduce en victorias</div>
+              <div style={{position:"relative",height:chartH,marginBottom:24}}>
+                {/* Y axis labels */}
+                {[0,25,50,75,100].map(v=>(
+                  <div key={v} style={{position:"absolute",left:0,bottom:`${(v/maxRate)*100}%`,width:"100%",
+                    borderBottom:"1px solid #1e1e2e",fontSize:9,color:"#444"}}>
+                    <span style={{position:"absolute",left:0,top:-10}}>{v}%</span>
+                  </div>
+                ))}
+                {/* Bars */}
+                <div style={{position:"absolute",left:30,right:0,bottom:0,top:0,display:"flex",alignItems:"flex-end",
+                  justifyContent:"space-around",gap:8}}>
+                  {ESTADOS.map(e=>{
+                    const d = byEstado[e.id];
+                    const wr = d.total ? (d.wins/d.total)*100 : 0;
+                    const lr = d.total ? (d.losses/d.total)*100 : 0;
+                    return (
+                      <div key={e.id} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
+                        <div style={{display:"flex",gap:2,alignItems:"flex-end",height:chartH-20,width:"100%"}}>
+                          <div style={{flex:1,display:"flex",flexDirection:"column",justifyContent:"flex-end",alignItems:"center"}}>
+                            <span style={{fontSize:9,color:"#22c55e",fontWeight:700}}>{Math.round(wr)}%</span>
+                            <div style={{width:"100%",background:"#22c55e",borderRadius:"4px 4px 0 0",
+                              height:`${(wr/maxRate)*(chartH-30)}px`,transition:"height 0.5s",minHeight:wr>0?2:0}}/>
+                          </div>
+                          <div style={{flex:1,display:"flex",flexDirection:"column",justifyContent:"flex-end",alignItems:"center"}}>
+                            <span style={{fontSize:9,color:"#ef4444",fontWeight:700}}>{Math.round(lr)}%</span>
+                            <div style={{width:"100%",background:"#ef4444",borderRadius:"4px 4px 0 0",
+                              height:`${(lr/maxRate)*(chartH-30)}px`,transition:"height 0.5s",minHeight:lr>0?2:0}}/>
+                          </div>
+                        </div>
+                        <div style={{fontSize:9,color:e.color,fontWeight:700,textAlign:"center",lineHeight:1.2}}>{e.label}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+              <div style={{display:"flex",gap:16,justifyContent:"center",fontSize:11}}>
+                <span><span style={{display:"inline-block",width:10,height:10,background:"#22c55e",borderRadius:2,marginRight:4}}/>Victorias</span>
+                <span><span style={{display:"inline-block",width:10,height:10,background:"#ef4444",borderRadius:2,marginRight:4}}/>Derrotas</span>
+              </div>
+              <div style={{fontSize:10,color:"#555",marginTop:8,textAlign:"center",lineHeight:1.5}}>
+                n = {ESTADOS.map(e=>`${e.label}: ${byEstado[e.id].total}`).join(" · ")}
+              </div>
+            </Card>
+
+            {/* Fichas por jugador */}
             <Card accent="#f97316">
               <div style={{fontSize:11,color:"#555",marginBottom:12}}>FICHAS POR JUGADOR</div>
               <div style={{display:"flex",flexDirection:"column",gap:6}}>
@@ -1498,52 +1622,6 @@ function GestorScreen({ roomCode }) {
                           transition:"width 0.5s",minWidth:bal>0?4:0}}/>
                         <span style={{position:"absolute",right:6,top:0,fontSize:10,fontWeight:700,
                           color:"#fff",lineHeight:"14px"}}>{bal}</span>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </Card>
-
-            {/* Gráfica de barras: victorias */}
-            <Card accent="#22c55e">
-              <div style={{fontSize:11,color:"#555",marginBottom:12}}>VICTORIAS POR JUGADOR</div>
-              <div style={{display:"flex",flexDirection:"column",gap:6}}>
-                {sorted.map(([uid,s])=>{
-                  const pct = (s.wins/maxWins)*100;
-                  return (
-                    <div key={uid} style={{display:"flex",alignItems:"center",gap:8}}>
-                      <span style={{fontSize:12,width:20,textAlign:"center"}}>{s.avatar}</span>
-                      <span style={{color:s.color,fontWeight:700,fontSize:11,width:80,overflow:"hidden",
-                        textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.nick}</span>
-                      <div style={{flex:1,background:"#1e1e2e",borderRadius:4,height:14,position:"relative"}}>
-                        <div style={{width:`${pct}%`,background:"#22c55e",borderRadius:4,height:"100%",
-                          transition:"width 0.5s",minWidth:s.wins>0?4:0}}/>
-                        <span style={{position:"absolute",right:6,top:0,fontSize:10,fontWeight:700,
-                          color:"#fff",lineHeight:"14px"}}>{s.wins}</span>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </Card>
-
-            {/* Gráfica de barras: partidas jugadas */}
-            <Card accent="#3b82f6">
-              <div style={{fontSize:11,color:"#555",marginBottom:12}}>PARTIDAS JUGADAS POR JUGADOR</div>
-              <div style={{display:"flex",flexDirection:"column",gap:6}}>
-                {sorted.map(([uid,s])=>{
-                  const pct = (s.played/maxPlayed)*100;
-                  return (
-                    <div key={uid} style={{display:"flex",alignItems:"center",gap:8}}>
-                      <span style={{fontSize:12,width:20,textAlign:"center"}}>{s.avatar}</span>
-                      <span style={{color:s.color,fontWeight:700,fontSize:11,width:80,overflow:"hidden",
-                        textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.nick}</span>
-                      <div style={{flex:1,background:"#1e1e2e",borderRadius:4,height:14,position:"relative"}}>
-                        <div style={{width:`${pct}%`,background:"#3b82f6",borderRadius:4,height:"100%",
-                          transition:"width 0.5s",minWidth:s.played>0?4:0}}/>
-                        <span style={{position:"absolute",right:6,top:0,fontSize:10,fontWeight:700,
-                          color:"#fff",lineHeight:"14px"}}>{s.played}</span>
                       </div>
                     </div>
                   );
@@ -1993,6 +2071,7 @@ function PlayerScreen({ roomCode, playerId, profile, onLeave }) {
               </div>
             )}
 
+            {casa&&<div style={{fontSize:13,color:"#a855f7",marginBottom:6}}>Pozo de {pot} fichas va para la casa</div>}
             <div style={{fontSize:22,fontWeight:900,color:"#f97316",marginBottom:4}}>💰 {myBal} fichas</div>
             <p style={{color:"#555",fontSize:12}}>Espera la siguiente partida…</p>
           </Card>
