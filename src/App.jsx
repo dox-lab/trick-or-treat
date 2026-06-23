@@ -182,22 +182,26 @@ function buildSchedule(playerIds, totalPartidas) {
   return schedule;
 }
 
-function buildFaseSchedule(playerIds, totalPartidas, cfg) {
-  const fases = {};
-  playerIds.forEach(pid => {
-    const pool = [
-      ...Array(cfg.control      ||0).fill("control"),
-      ...Array(cfg.yo_trampo    ||0).fill("yo_trampo"),
-      ...Array(cfg.rival_trampa ||0).fill("rival_trampa"),
-      ...Array(cfg.ambos        ||0).fill("ambos"),
-    ];
-    for (let i = pool.length-1; i>0; i--) {
-      const j = Math.floor(Math.random()*(i+1));
-      [pool[i],pool[j]] = [pool[j],pool[i]];
-    }
-    fases[pid] = pool.slice(0, totalPartidas);
-  });
-  return fases;
+function deriveCondicion(estadoPartida, isPlayerA) {
+  if (estadoPartida === "limpio") return "limpio";
+  if (estadoPartida === "ambos_trampa") return "tramposo";
+  if (estadoPartida === "A_trampa") return isPlayerA ? "tramposo" : "limpio";
+  if (estadoPartida === "B_trampa") return isPlayerA ? "limpio" : "tramposo";
+  return "limpio";
+}
+
+function buildMatchStateSchedule(totalPartidas, cfg) {
+  const pool = [
+    ...Array(cfg.limpio       ||0).fill("limpio"),
+    ...Array(cfg.A_trampa     ||0).fill("A_trampa"),
+    ...Array(cfg.B_trampa     ||0).fill("B_trampa"),
+    ...Array(cfg.ambos_trampa ||0).fill("ambos_trampa"),
+  ];
+  for (let i = pool.length-1; i>0; i--) {
+    const j = Math.floor(Math.random()*(i+1));
+    [pool[i],pool[j]] = [pool[j],pool[i]];
+  }
+  return pool.slice(0, totalPartidas);
 }
 
 // ─── DADO SVG ────────────────────────────────────────────────────────────────
@@ -373,7 +377,7 @@ function HomeScreen({ onGestor, onJoin }) {
 function CreateRoomScreen({ onCreated }) {
   const [pw, setPw]       = useState("");
   const [total, setTotal] = useState(5);
-  const [cfg, setCfg]     = useState({control:1,yo_trampo:2,rival_trampa:1,ambos:1});
+  const [cfg, setCfg]     = useState({limpio:1,A_trampa:2,B_trampa:1,ambos_trampa:1});
   const [botCount, setBotCount]           = useState(0);
   const [botStrategies, setBotStrategies] = useState([]);
   const [loading, setLoading]         = useState(false);
@@ -395,7 +399,7 @@ function CreateRoomScreen({ onCreated }) {
       config:{ totalPartidas:total, faseConfig:cfg, showEV:false, showRivalEV:false, timerSecs:0,
                open:false, botCount, botStrategies },
       status:{ phase:"lobby", partidaActual:0 },
-      players:botPlayers, pairs:{}, faseSchedule:{}, balance:{}, logs:{},
+      players:botPlayers, pairs:{}, matchStateSchedule:[], balance:{}, logs:{},
       createdAt:Date.now(),
     });
     setLoading(false);
@@ -418,16 +422,16 @@ function CreateRoomScreen({ onCreated }) {
         </label>
         <input type="range" min={2} max={10} value={total}
           onChange={e=>{ const v=+e.target.value; setTotal(v);
-            const q=Math.floor(v/4)||1; setCfg({control:q,yo_trampo:q,rival_trampa:q,ambos:v-3*q}); }}
+            const q=Math.floor(v/4)||1; setCfg({limpio:q,A_trampa:q,B_trampa:q,ambos_trampa:v-3*q}); }}
           style={{width:"100%",marginBottom:20,accentColor:"#f97316"}}/>
         <div style={{fontSize:13,color:"#777",marginBottom:10}}>
           Estados <span style={{color:suma===total?"#22c55e":"#ef4444",fontWeight:700}}>({suma}/{total})</span>
         </div>
         {[
-          {k:"control",      label:"🎯 Estado limpio",       color:"#aaa"},
-          {k:"yo_trampo",    label:"🃏 Yo tramposo",        color:"#eab308"},
-          {k:"rival_trampa", label:"👁️ Rival tramposo",     color:"#ef4444"},
-          {k:"ambos",        label:"⚔️ Ambos tramposos",    color:"#a855f7"},
+          {k:"limpio",       label:"🎯 Limpio (nadie trampa)", color:"#aaa"},
+          {k:"A_trampa",     label:"🅰️ Jugador A trampa",     color:"#eab308"},
+          {k:"B_trampa",     label:"🅱️ Jugador B trampa",     color:"#3b82f6"},
+          {k:"ambos_trampa", label:"⚔️ Ambos trampa",          color:"#a855f7"},
         ].map(({k,label,color})=>(
           <div key={k} style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
             <span style={{flex:1,fontSize:13,color}}>{label}</span>
@@ -713,7 +717,8 @@ async function finalizarPartidaDB(roomCode, room, n, pairKey, pd, ganador, motiv
     nickname_jugador:ganador==="casa"?"casa":room.players?.[ganador]?.nickname||"",
     nickname_rival:"",
     accion:"resultado", ronda:4, ev:0, tiempo_ms:0,
-    fase:pd.fases?.[ganador]||"control",
+    estado_partida:pd.estadoPartida||"limpio",
+    condicion_jugador:pd.condicion?.[ganador]||"limpio",
     scoreA:pd.scoreA||0, scoreB:pd.scoreB||0,
     resultado:res, ts:Date.now(),
   });
@@ -756,7 +761,7 @@ function GestorScreen({ roomCode }) {
         await update(ref(db,`rooms/${roomCode}/status`),{phase:"finished"});
       } else {
         const players = Object.keys(r.players||{}).filter(k=>k!=="gestor");
-        await launchPartida(next, players, r.pairs, r.faseSchedule, r.config.totalPartidas, r);
+        await launchPartida(next, players, r.pairs, r.matchStateSchedule, r.config.totalPartidas, r);
       }
     }, 3000);
     return ()=>clearTimeout(timer);
@@ -800,7 +805,8 @@ function GestorScreen({ roomCode }) {
             nickname_jugador:room.players?.[pid]?.nickname||pid,
             nickname_rival:room.players?.[rival]?.nickname||rival,
             accion:decision,ronda,ev,tiempo_ms:Math.floor(delay),
-            fase:pd.fases?.[pid]||"control",
+            estado_partida:pd.estadoPartida||"limpio",
+            condicion_jugador:pd.condicion?.[pid]||"limpio",
             suma_propia:myDice.reduce((a,b)=>a+b,0),
             suma_publica:pub.reduce((a,b)=>a+b,0),
             resultado:null,ts:Date.now(),
@@ -858,7 +864,7 @@ function GestorScreen({ roomCode }) {
     await update(ref(db,`rooms/${roomCode}/status`),{phase:"lobby",partidaActual:0});
   };
 
-  const launchPartida = async (numPartida, players, schedule, faseSchedule, totalPartidas, r) => {
+  const launchPartida = async (numPartida, players, schedule, matchStateSchedule, totalPartidas, r) => {
     const idx = numPartida-1;
     const done = new Set();
     const partidaData = {};
@@ -868,13 +874,15 @@ function GestorScreen({ roomCode }) {
       if (!rival||done.has(rival)) return;
       done.add(pid); done.add(rival);
       const pairKey = [pid,rival].sort().join("_");
+      const estadoPartida = (matchStateSchedule||[])[idx] || "limpio";
       partidaData[pairKey] = {
         jugadores:[pid,rival],
         dados:{ [pid]:[roll(),roll()], [rival]:[roll(),roll()] },
         publicos:[roll(),roll()],
-        fases:{
-          [pid]:(faseSchedule[pid]||[])[idx]||"control",
-          [rival]:(faseSchedule[rival]||[])[idx]||"control",
+        estadoPartida,
+        condicion:{
+          [pid]:deriveCondicion(estadoPartida, true),
+          [rival]:deriveCondicion(estadoPartida, false),
         },
         ronda:1, pot:2, decisiones:{}, resultado:null,
         scoreA:null, scoreB:null, best3A:null, best3B:null,
@@ -921,7 +929,8 @@ function GestorScreen({ roomCode }) {
           nickname_jugador:r?.players?.[pid]?.nickname||pid,
           nickname_rival:r?.players?.[rival]?.nickname||rival,
           accion:decision,ronda,ev,tiempo_ms:Math.floor(delay),
-          fase:pdC.fases?.[pid]||"control",
+          estado_partida:pdC.estadoPartida||"limpio",
+          condicion_jugador:pdC.condicion?.[pid]||"limpio",
           suma_propia:myDice.reduce((a,b)=>a+b,0),
           suma_publica:pub.reduce((a,b)=>a+b,0),
           resultado:null,ts:Date.now(),
@@ -950,22 +959,22 @@ function GestorScreen({ roomCode }) {
   const startExperiment = async () => {
     const players = Object.keys(room.players||{}).filter(k=>k!=="gestor");
     if (players.length<2){ alert("Necesitas al menos 2 jugadores"); return; }
-    const tp           = room.config.totalPartidas;
-    const schedule     = buildSchedule(players,tp);
-    const faseSchedule = buildFaseSchedule(players,tp,room.config.faseConfig);
-    const balanceInit  = {};
+    const tp                 = room.config.totalPartidas;
+    const schedule           = buildSchedule(players,tp);
+    const matchStateSchedule = buildMatchStateSchedule(tp,room.config.faseConfig);
+    const balanceInit        = {};
     players.forEach(p=>{ balanceInit[p]=10; });
     await update(ref(db,`rooms/${roomCode}`),{
-      pairs:schedule, faseSchedule, "status/phase":"playing","status/partidaActual":1, balance:balanceInit,
+      pairs:schedule, matchStateSchedule, "status/phase":"playing","status/partidaActual":1, balance:balanceInit,
     });
-    await launchPartida(1,players,schedule,faseSchedule,tp,room);
+    await launchPartida(1,players,schedule,matchStateSchedule,tp,room);
   };
 
   const resetSession = async ()=>{
     const players = Object.keys(room?.players||{}).filter(k=>k!=="gestor");
     const bal={}; players.forEach(p=>{bal[p]=10;});
     await update(ref(db,`rooms/${roomCode}`),{
-      partidas:null,logs:null,balance:bal,pairs:null,faseSchedule:null,
+      partidas:null,logs:null,balance:bal,pairs:null,matchStateSchedule:null,
       "status/phase":"lobby","status/partidaActual":0,
     });
   };
@@ -1006,8 +1015,8 @@ function GestorScreen({ roomCode }) {
       "jugador_id","jugador_nick","jugador_es_bot","jugador_estrategia",
       // Rival
       "rival_id","rival_nick","rival_es_bot","rival_estrategia",
-      // Estado (antes "fase")
-      "estado_jugador","estado_rival",
+      // Estado de partida y condición derivada
+      "estado_partida","condicion_jugador","condicion_rival",
       // Flags booleanos para filtrado rápido en R
       "jugador_tiene_ventaja","rival_tiene_ventaja","ambos_ventaja","estado_limpio",
       // Dados
@@ -1071,12 +1080,13 @@ function GestorScreen({ roomCode }) {
           const rInfo = pl[rival]||{};
           const myDice  = pd.dados?.[pid]||[];
           const rivDice = pd.dados?.[rival]||[];
-          const estJ = pd.fases?.[pid]||"control";
-          const estR = pd.fases?.[rival]||"control";
-          const tieneVentaja  = estJ==="yo_trampo"||estJ==="ambos";
-          const rivalVentaja  = estR==="yo_trampo"||estR==="ambos";
-          const ambosVentaja  = estJ==="ambos";
-          const estadoLimpio  = estJ==="control";
+          const estadoPartida = pd.estadoPartida||"limpio";
+          const condJ = pd.condicion?.[pid]||"limpio";
+          const condR = pd.condicion?.[rival]||"limpio";
+          const tieneVentaja  = condJ==="tramposo";
+          const rivalVentaja  = condR==="tramposo";
+          const ambosVentaja  = estadoPartida==="ambos_trampa";
+          const estadoLimpio  = estadoPartida==="limpio";
           const isJugA   = pid===pA;
           const scoreFJ  = isJugA ? pd.scoreA : pd.scoreB;
           const scoreFR  = isJugA ? pd.scoreB : pd.scoreA;
@@ -1104,7 +1114,7 @@ function GestorScreen({ roomCode }) {
               roomCode, nPart, pairKey, ronda,
               pid, pInfo.nickname||pid, B(pInfo.isBot), pInfo.strategy||"",
               rival, rInfo.nickname||rival, B(rInfo.isBot), rInfo.strategy||"",
-              estJ, estR,
+              estadoPartida, condJ, condR,
               B(tieneVentaja), B(rivalVentaja), B(ambosVentaja), B(estadoLimpio),
               myDice[0]??"", myDice[1]??"", myDice.reduce((a,b)=>a+b,0),
               rivDice[0]??"", rivDice[1]??"", rivDice.reduce((a,b)=>a+b,0),
@@ -1251,8 +1261,11 @@ function GestorScreen({ roomCode }) {
             const pub=pd.publicos||[];
             return (
               <Card key={pairKey} accent={pd.resultado?"#22c55e":"#f97316"}>
-                <div style={{fontSize:11,color:"#555",marginBottom:8}}>
+                <div style={{fontSize:11,color:"#555",marginBottom:4}}>
                   {pd.resultado?"✓ TERMINADO":"EN JUEGO"} · R{pd.ronda}/3
+                  <span style={{marginLeft:8,color:{limpio:"#aaa",A_trampa:"#eab308",B_trampa:"#3b82f6",ambos_trampa:"#a855f7"}[pd.estadoPartida]||"#555"}}>
+                    {{limpio:"Limpio",A_trampa:"A trampa",B_trampa:"B trampa",ambos_trampa:"Ambos trampa"}[pd.estadoPartida]||"-"}
+                  </span>
                 </div>
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:8}}>
                   {[[pA,plA,pd.scoreA,pd.best3A],[pB,plB,pd.scoreB,pd.best3B]].map(([pid,pl,score,best3])=>pl&&(
@@ -1272,7 +1285,7 @@ function GestorScreen({ roomCode }) {
                         R{pd.ronda}: {pd.decisiones?.[`${pd.ronda}_${pid}`]||"⏳"}
                       </div>
                       <div style={{fontSize:11,color:"#555",marginTop:2}}>
-                        Estado: <span style={{color:"#aaa"}}>{pd.fases?.[pid]||"-"}</span>
+                        Cond: <span style={{color:(pd.condicion?.[pid]==="tramposo")?"#eab308":"#aaa"}}>{pd.condicion?.[pid]||"-"}</span>
                       </div>
                     </div>
                   ))}
@@ -1336,14 +1349,18 @@ function GestorScreen({ roomCode }) {
                         </div>
                         <span style={{fontSize:11,color:"#a855f7",fontWeight:700}}>Pozo: {d.pot||2}</span>
                       </div>
+                      {/* Estado de partida */}
+                      <div style={{fontSize:9,marginBottom:6,color:{limpio:"#aaa",A_trampa:"#eab308",B_trampa:"#3b82f6",ambos_trampa:"#a855f7"}[d.estadoPartida]||"#555"}}>
+                        {{limpio:"Limpio",A_trampa:"A trampa",B_trampa:"B trampa",ambos_trampa:"Ambos trampa"}[d.estadoPartida]||"-"}
+                      </div>
                       {/* Jugadores lado a lado */}
                       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
                         {[[pA,plA],[pB,plB]].map(([pid,pl])=>{
                           if (!pl) return null;
                           const dice = d.dados?.[pid]||[];
-                          const fase = d.fases?.[pid]||"control";
-                          const fColor = {control:"#666",yo_trampo:"#eab308",rival_trampa:"#ef4444",ambos:"#a855f7"}[fase]||"#666";
-                          const fLabel = {control:"Limpio",yo_trampo:"Yo trampo",rival_trampa:"Rival trampa",ambos:"Ambos trampa"}[fase]||fase;
+                          const cond = d.condicion?.[pid]||"limpio";
+                          const cColor = cond==="tramposo"?"#eab308":"#666";
+                          const cLabel = cond==="tramposo"?"Tramposo 👁️":"Limpio";
                           return (
                             <div key={pid}>
                               <div style={{display:"flex",alignItems:"center",gap:5,marginBottom:5}}>
@@ -1372,8 +1389,8 @@ function GestorScreen({ roomCode }) {
                                   );
                                 })}
                               </div>
-                              {/* Fase */}
-                              <div style={{fontSize:9,color:fColor}}>{fLabel}</div>
+                              {/* Condición */}
+                              <div style={{fontSize:9,color:cColor}}>{cLabel}</div>
                               {/* Score si terminó */}
                               {ended && d.scoreA!=null && (
                                 <div style={{fontSize:11,color:"#f97316",fontWeight:700,marginTop:3}}>
@@ -1416,23 +1433,29 @@ function GestorScreen({ roomCode }) {
         const faltantes = Math.max(0, totalP - jugadas);
         const enCurso  = phase==="playing" && jugadas < totalP ? 1 : 0;
 
-        const ESTADOS = [
-          {id:"control",      label:"Limpio",         color:"#aaa"},
-          {id:"yo_trampo",    label:"Yo tramposo",    color:"#eab308"},
-          {id:"rival_trampa", label:"Rival tramposo", color:"#ef4444"},
-          {id:"ambos",        label:"Ambos tramposos",color:"#a855f7"},
+        const ESTADOS_PARTIDA = [
+          {id:"limpio",       label:"Limpio",       color:"#aaa"},
+          {id:"A_trampa",     label:"A trampa",     color:"#eab308"},
+          {id:"B_trampa",     label:"B trampa",     color:"#3b82f6"},
+          {id:"ambos_trampa", label:"Ambos trampa", color:"#a855f7"},
+        ];
+        const CONDICIONES = [
+          {id:"tramposo", label:"Tramposo", color:"#eab308"},
+          {id:"limpio",   label:"Limpio",   color:"#aaa"},
         ];
         const statsMap = {};
         allPlayers.forEach(([uid,p])=>{
           const base = { nick:p.nickname, avatar:p.avatar, color:p.color, isBot:!!p.isBot,
             wins:0, losses:0, draws:0, played:0, bets:0, folds:0 };
-          ESTADOS.forEach(e=>{ base[`w_${e.id}`]=0; base[`l_${e.id}`]=0; });
+          ESTADOS_PARTIDA.forEach(e=>{ base[`w_${e.id}`]=0; base[`l_${e.id}`]=0; });
+          CONDICIONES.forEach(c=>{ base[`wc_${c.id}`]=0; base[`lc_${c.id}`]=0; });
           statsMap[uid] = base;
         });
         Object.values(partidas||{}).forEach(partidaObj=>{
           Object.values(partidaObj||{}).forEach(pd=>{
             if (!pd.resultado) return;
             const [pA,pB] = pd.jugadores||[];
+            const est = pd.estadoPartida||"limpio";
             [pA,pB].forEach(pid=>{
               if (!statsMap[pid]) return;
               statsMap[pid].played++;
@@ -1442,8 +1465,10 @@ function GestorScreen({ roomCode }) {
               [pA,pB].forEach(pid=>{ if(statsMap[pid]) statsMap[pid].draws++; });
             } else {
               const loser = gan===pA?pB:pA;
-              if (statsMap[gan])  { statsMap[gan].wins++;  statsMap[gan][`w_${pd.fases?.[gan]||"control"}`]++; }
-              if (statsMap[loser]){ statsMap[loser].losses++; statsMap[loser][`l_${pd.fases?.[loser]||"control"}`]++; }
+              const ganCond = pd.condicion?.[gan]||"limpio";
+              const losCond = pd.condicion?.[loser]||"limpio";
+              if (statsMap[gan])  { statsMap[gan].wins++;  statsMap[gan][`w_${est}`]++; statsMap[gan][`wc_${ganCond}`]++; }
+              if (statsMap[loser]){ statsMap[loser].losses++; statsMap[loser][`l_${est}`]++; statsMap[loser][`lc_${losCond}`]++; }
             }
           });
         });
@@ -1456,21 +1481,29 @@ function GestorScreen({ roomCode }) {
         const sorted = Object.entries(statsMap).sort((a,b)=>(balance?.[b[0]]??10)-(balance?.[a[0]]??10));
         const maxBal = Math.max(1, ...sorted.map(([uid])=>balance?.[uid]??10));
 
-        // Aggregate by estado for the experiment-level chart
-        const byEstado = {};
-        ESTADOS.forEach(e=>{ byEstado[e.id]={wins:0,losses:0,draws:0,total:0}; });
+        const byMatchState = {};
+        ESTADOS_PARTIDA.forEach(e=>{ byMatchState[e.id]={wins:0,losses:0,draws:0,total:0}; });
+        const byCondicion = {};
+        CONDICIONES.forEach(c=>{ byCondicion[c.id]={wins:0,losses:0,draws:0,total:0}; });
         Object.values(partidas||{}).forEach(partidaObj=>{
           Object.values(partidaObj||{}).forEach(pd=>{
             if (!pd.resultado) return;
+            const est = pd.estadoPartida||"limpio";
             const [pA,pB] = pd.jugadores||[];
             const gan = pd.ganador;
+            if (byMatchState[est]) {
+              byMatchState[est].total++;
+              if (gan==="casa") byMatchState[est].draws++;
+              else if (gan===pA) byMatchState[est].wins++;
+              else byMatchState[est].losses++;
+            }
             [pA,pB].forEach(pid=>{
-              const est = pd.fases?.[pid]||"control";
-              if (!byEstado[est]) return;
-              byEstado[est].total++;
-              if (gan==="casa") byEstado[est].draws++;
-              else if (gan===pid) byEstado[est].wins++;
-              else byEstado[est].losses++;
+              const cond = pd.condicion?.[pid]||"limpio";
+              if (!byCondicion[cond]) return;
+              byCondicion[cond].total++;
+              if (gan==="casa") byCondicion[cond].draws++;
+              else if (gan===pid) byCondicion[cond].wins++;
+              else byCondicion[cond].losses++;
             });
           });
         });
@@ -1541,16 +1574,16 @@ function GestorScreen({ roomCode }) {
               </div>
             </Card>
 
-            {/* Victorias por estado */}
+            {/* Victorias por estado de partida */}
             <Card accent="#22c55e">
-              <div style={{fontSize:11,color:"#555",marginBottom:10}}>VICTORIAS POR ESTADO</div>
+              <div style={{fontSize:11,color:"#555",marginBottom:10}}>VICTORIAS POR ESTADO DE PARTIDA</div>
               {sorted.map(([uid,s])=>(
                 <div key={uid} style={{marginBottom:10}}>
                   <div style={{fontSize:12,color:s.color,fontWeight:700,marginBottom:4}}>
                     {s.avatar} {s.nick}{s.isBot?" 🤖":""}
                   </div>
                   <div style={{display:"flex",gap:4}}>
-                    {ESTADOS.map(e=>{
+                    {ESTADOS_PARTIDA.map(e=>{
                       const v = s[`w_${e.id}`]||0;
                       return (
                         <div key={e.id} style={{flex:1,textAlign:"center"}}>
@@ -1569,26 +1602,35 @@ function GestorScreen({ roomCode }) {
               ))}
             </Card>
 
-            {/* Derrotas por estado */}
-            <Card accent="#ef4444">
-              <div style={{fontSize:11,color:"#555",marginBottom:10}}>DERROTAS POR ESTADO</div>
+            {/* Victorias por condición del jugador */}
+            <Card accent="#eab308">
+              <div style={{fontSize:11,color:"#555",marginBottom:10}}>VICTORIAS POR CONDICIÓN</div>
               {sorted.map(([uid,s])=>(
                 <div key={uid} style={{marginBottom:10}}>
                   <div style={{fontSize:12,color:s.color,fontWeight:700,marginBottom:4}}>
                     {s.avatar} {s.nick}{s.isBot?" 🤖":""}
                   </div>
                   <div style={{display:"flex",gap:4}}>
-                    {ESTADOS.map(e=>{
-                      const v = s[`l_${e.id}`]||0;
+                    {CONDICIONES.map(c=>{
+                      const w = s[`wc_${c.id}`]||0;
+                      const l = s[`lc_${c.id}`]||0;
                       return (
-                        <div key={e.id} style={{flex:1,textAlign:"center"}}>
-                          <div style={{background:"#1e1e2e",borderRadius:4,height:20,position:"relative",overflow:"hidden"}}>
-                            <div style={{width:`${v?Math.max((v/Math.max(1,s.losses))*100,12):0}%`,
-                              background:e.color,borderRadius:4,height:"100%",transition:"width 0.5s"}}/>
-                            <span style={{position:"absolute",inset:0,fontSize:10,fontWeight:700,
-                              color:"#fff",lineHeight:"20px"}}>{v}</span>
+                        <div key={c.id} style={{flex:1,textAlign:"center"}}>
+                          <div style={{display:"flex",gap:2,marginBottom:2}}>
+                            <div style={{flex:1,background:"#1e1e2e",borderRadius:4,height:20,position:"relative",overflow:"hidden"}}>
+                              <div style={{width:`${w?Math.max((w/Math.max(1,s.wins))*100,15):0}%`,
+                                background:"#22c55e",borderRadius:4,height:"100%",transition:"width 0.5s"}}/>
+                              <span style={{position:"absolute",inset:0,fontSize:10,fontWeight:700,
+                                color:"#fff",lineHeight:"20px"}}>{w}W</span>
+                            </div>
+                            <div style={{flex:1,background:"#1e1e2e",borderRadius:4,height:20,position:"relative",overflow:"hidden"}}>
+                              <div style={{width:`${l?Math.max((l/Math.max(1,s.losses))*100,15):0}%`,
+                                background:"#ef4444",borderRadius:4,height:"100%",transition:"width 0.5s"}}/>
+                              <span style={{position:"absolute",inset:0,fontSize:10,fontWeight:700,
+                                color:"#fff",lineHeight:"20px"}}>{l}L</span>
+                            </div>
                           </div>
-                          <div style={{fontSize:8,color:e.color,marginTop:2}}>{e.label}</div>
+                          <div style={{fontSize:8,color:c.color,marginTop:2}}>{c.label}</div>
                         </div>
                       );
                     })}
@@ -1597,23 +1639,67 @@ function GestorScreen({ roomCode }) {
               ))}
             </Card>
 
-            {/* Gráfico: ¿Hacer trampa beneficia? Win rate por estado */}
+            {/* Gráfico: ¿Hacer trampa beneficia? — por condición */}
             <Card accent="#eab308">
               <div style={{fontSize:11,color:"#555",marginBottom:4}}>¿HACER TRAMPA BENEFICIA?</div>
-              <div style={{fontSize:10,color:"#444",marginBottom:12}}>Win rate (%) por estado — responde si la ventaja informacional se traduce en victorias</div>
+              <div style={{fontSize:10,color:"#444",marginBottom:12}}>Win rate (%) por condición del jugador — Tramposo vs Limpio</div>
               <div style={{position:"relative",height:chartH,marginBottom:24}}>
-                {/* Y axis labels */}
                 {[0,25,50,75,100].map(v=>(
                   <div key={v} style={{position:"absolute",left:0,bottom:`${(v/maxRate)*100}%`,width:"100%",
                     borderBottom:"1px solid #1e1e2e",fontSize:9,color:"#444"}}>
                     <span style={{position:"absolute",left:0,top:-10}}>{v}%</span>
                   </div>
                 ))}
-                {/* Bars */}
                 <div style={{position:"absolute",left:30,right:0,bottom:0,top:0,display:"flex",alignItems:"flex-end",
                   justifyContent:"space-around",gap:8}}>
-                  {ESTADOS.map(e=>{
-                    const d = byEstado[e.id];
+                  {CONDICIONES.map(c=>{
+                    const d = byCondicion[c.id];
+                    const wr = d.total ? (d.wins/d.total)*100 : 0;
+                    const lr = d.total ? (d.losses/d.total)*100 : 0;
+                    return (
+                      <div key={c.id} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
+                        <div style={{display:"flex",gap:2,alignItems:"flex-end",height:chartH-20,width:"100%"}}>
+                          <div style={{flex:1,display:"flex",flexDirection:"column",justifyContent:"flex-end",alignItems:"center"}}>
+                            <span style={{fontSize:9,color:"#22c55e",fontWeight:700}}>{Math.round(wr)}%</span>
+                            <div style={{width:"100%",background:"#22c55e",borderRadius:"4px 4px 0 0",
+                              height:`${(wr/maxRate)*(chartH-30)}px`,transition:"height 0.5s",minHeight:wr>0?2:0}}/>
+                          </div>
+                          <div style={{flex:1,display:"flex",flexDirection:"column",justifyContent:"flex-end",alignItems:"center"}}>
+                            <span style={{fontSize:9,color:"#ef4444",fontWeight:700}}>{Math.round(lr)}%</span>
+                            <div style={{width:"100%",background:"#ef4444",borderRadius:"4px 4px 0 0",
+                              height:`${(lr/maxRate)*(chartH-30)}px`,transition:"height 0.5s",minHeight:lr>0?2:0}}/>
+                          </div>
+                        </div>
+                        <div style={{fontSize:9,color:c.color,fontWeight:700,textAlign:"center",lineHeight:1.2}}>{c.label}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+              <div style={{display:"flex",gap:16,justifyContent:"center",fontSize:11}}>
+                <span><span style={{display:"inline-block",width:10,height:10,background:"#22c55e",borderRadius:2,marginRight:4}}/>Victorias</span>
+                <span><span style={{display:"inline-block",width:10,height:10,background:"#ef4444",borderRadius:2,marginRight:4}}/>Derrotas</span>
+              </div>
+              <div style={{fontSize:10,color:"#555",marginTop:8,textAlign:"center",lineHeight:1.5}}>
+                n = {CONDICIONES.map(c=>`${c.label}: ${byCondicion[c.id].total}`).join(" · ")}
+              </div>
+            </Card>
+
+            {/* Gráfico: Win rate por estado de partida */}
+            <Card accent="#a855f7">
+              <div style={{fontSize:11,color:"#555",marginBottom:4}}>WIN RATE POR ESTADO DE PARTIDA</div>
+              <div style={{fontSize:10,color:"#444",marginBottom:12}}>Victorias y derrotas según el tipo de partida (Jugador A es jugadores[0])</div>
+              <div style={{position:"relative",height:chartH,marginBottom:24}}>
+                {[0,25,50,75,100].map(v=>(
+                  <div key={v} style={{position:"absolute",left:0,bottom:`${(v/maxRate)*100}%`,width:"100%",
+                    borderBottom:"1px solid #1e1e2e",fontSize:9,color:"#444"}}>
+                    <span style={{position:"absolute",left:0,top:-10}}>{v}%</span>
+                  </div>
+                ))}
+                <div style={{position:"absolute",left:30,right:0,bottom:0,top:0,display:"flex",alignItems:"flex-end",
+                  justifyContent:"space-around",gap:8}}>
+                  {ESTADOS_PARTIDA.map(e=>{
+                    const d = byMatchState[e.id];
                     const wr = d.total ? (d.wins/d.total)*100 : 0;
                     const lr = d.total ? (d.losses/d.total)*100 : 0;
                     return (
@@ -1641,7 +1727,7 @@ function GestorScreen({ roomCode }) {
                 <span><span style={{display:"inline-block",width:10,height:10,background:"#ef4444",borderRadius:2,marginRight:4}}/>Derrotas</span>
               </div>
               <div style={{fontSize:10,color:"#555",marginTop:8,textAlign:"center",lineHeight:1.5}}>
-                n = {ESTADOS.map(e=>`${e.label}: ${byEstado[e.id].total}`).join(" · ")}
+                n = {ESTADOS_PARTIDA.map(e=>`${e.label}: ${byMatchState[e.id].total}`).join(" · ")}
               </div>
             </Card>
 
@@ -1683,7 +1769,7 @@ function GestorScreen({ roomCode }) {
             <div style={{overflowX:"auto"}}>
               <table style={{width:"100%",borderCollapse:"collapse",fontSize:11,fontFamily:"monospace"}}>
                 <thead>
-                  <tr>{["Part.","Jugador","Rival","Acción","Ronda","EV","T(ms)","Fase","ScA","ScB","Resultado"].map(h=>(
+                  <tr>{["Part.","Jugador","Rival","Acción","Ronda","EV","T(ms)","Estado","Cond","ScA","ScB","Resultado"].map(h=>(
                     <th key={h} style={{color:"#444",padding:"5px 6px",textAlign:"left",borderBottom:"1px solid #1e1e2e"}}>{h}</th>
                   ))}</tr>
                 </thead>
@@ -1701,7 +1787,8 @@ function GestorScreen({ roomCode }) {
                       <td style={{padding:"3px 6px",color:"#aaa"}}>{l.ronda}</td>
                       <td style={{padding:"3px 6px",color:"#a855f7"}}>{((l.ev||0)*100).toFixed(0)}%</td>
                       <td style={{padding:"3px 6px",color:"#555"}}>{l.tiempo_ms}</td>
-                      <td style={{padding:"3px 6px",color:"#555",fontSize:10}}>{l.fase}</td>
+                      <td style={{padding:"3px 6px",color:"#555",fontSize:10}}>{l.estado_partida||l.fase||"-"}</td>
+                      <td style={{padding:"3px 6px",color:l.condicion_jugador==="tramposo"?"#eab308":"#666",fontSize:10}}>{l.condicion_jugador||"-"}</td>
                       <td style={{padding:"3px 6px",color:"#f97316"}}>{l.scoreA??""}</td>
                       <td style={{padding:"3px 6px",color:"#3b82f6"}}>{l.scoreB??""}</td>
                       <td style={{padding:"3px 6px",color:"#22c55e"}}>{l.resultado||""}</td>
@@ -1827,8 +1914,8 @@ function PlayerScreen({ roomCode, playerId, profile, onLeave }) {
     const myPair = getMyPair(room,n);
     if (!myPair) return;
     const ronda = myPair.ronda||1;
-    const fase  = myPair.fases?.[playerId]||"control";
-    const isCheat = fase==="yo_trampo"||fase==="ambos";
+    const condicion = myPair.condicion?.[playerId]||"limpio";
+    const isCheat   = condicion==="tramposo";
 
     if (prevRondaRef.current!==null && ronda!==prevRondaRef.current) {
       setDecidido(false);
@@ -1958,7 +2045,8 @@ function PlayerScreen({ roomCode, playerId, profile, onLeave }) {
       nickname_jugador:profile?.nickname||"",
       nickname_rival:room.players?.[rival]?.nickname||"",
       accion,ronda,ev,tiempo_ms:tiempo,
-      fase:pd.fases?.[playerId]||"control",
+      estado_partida:pd.estadoPartida||"limpio",
+      condicion_jugador:pd.condicion?.[playerId]||"limpio",
       suma_propia:myDice.reduce((a,b)=>a+b,0),
       suma_publica:pubVis.reduce((a,b)=>a+b,0),
       resultado:null,ts:Date.now(),
@@ -2041,8 +2129,8 @@ function PlayerScreen({ roomCode, playerId, profile, onLeave }) {
   const pot       = myPair.pot||0;
   const resultado = myPair.resultado||null;
   const ganador   = myPair.ganador||null;
-  const fase      = myPair.fases?.[playerId]||"control";
-  const canCheat  = fase==="yo_trampo"||fase==="ambos";
+  const condicion = myPair.condicion?.[playerId]||"limpio";
+  const canCheat  = condicion==="tramposo";
   const rivalDice = myPair.dados?.[rival]||[];
   const yaDecidio = !!myPair.decisiones?.[`${ronda}_${playerId}`];
   const rivDecidio= !!myPair.decisiones?.[`${ronda}_${rival}`];
@@ -2359,7 +2447,7 @@ function PlayerMenu({ onLeave, players, balance, playerId, roomCode }) {
             ["💰 Rondas","Hay 3 rondas. En cada una decides: apostar (+1 ficha al pozo) o retirarte."],
             ["🏠 Retirarse","Si te retiras, el rival gana el pozo. Si ambos se retiran, la casa gana."],
             ["⚖️ Empate","Si ambos apuestan las 3 rondas y el score es igual, la casa gana el pozo."],
-            ["👁️ Fases","En algunas partidas puedes ver un dado del rival (o él ve el tuyo). Esto es parte del experimento."],
+            ["👁️ Estados","En algunas partidas tendrás ventaja: podrás ver un dado del rival. El estado de la partida determina quién puede espiar."],
           ].map(([t,d])=>(
             <div key={t} style={{marginBottom:10}}>
               <div style={{color:"#aaa",fontWeight:700,fontSize:13}}>{t}</div>
