@@ -889,8 +889,14 @@ function GestorScreen({ roomCode }) {
         startedAt:Date.now(),
       };
     });
+    const anteUpdates = {};
+    Object.values(partidaData).forEach(pd=>{
+      const [p1,p2] = pd.jugadores;
+      anteUpdates[`balance/${p1}`] = (r?.balance?.[p1]??10) - 1;
+      anteUpdates[`balance/${p2}`] = (r?.balance?.[p2]??10) - 1;
+    });
     await update(ref(db,`rooms/${roomCode}/partidas/${numPartida}`), partidaData);
-    await update(ref(db,`rooms/${roomCode}/status`),{partidaActual:numPartida, phase:"playing"});
+    await update(ref(db,`rooms/${roomCode}`), {...anteUpdates, "status/partidaActual":numPartida, "status/phase":"playing"});
     Object.entries(partidaData).forEach(([pairKey,pd])=>scheduleBotDecisions(numPartida,pairKey,pd,r));
   };
 
@@ -965,9 +971,9 @@ function GestorScreen({ roomCode }) {
     const balanceInit        = {};
     players.forEach(p=>{ balanceInit[p]=10; });
     await update(ref(db,`rooms/${roomCode}`),{
-      pairs:schedule, matchStateSchedule, "status/phase":"playing","status/partidaActual":1, balance:balanceInit,
+      pairs:schedule, matchStateSchedule, balance:balanceInit,
     });
-    await launchPartida(1,players,schedule,matchStateSchedule,tp,room);
+    await launchPartida(1,players,schedule,matchStateSchedule,tp,{...room, balance:balanceInit});
   };
 
   const resetSession = async ()=>{
@@ -1433,29 +1439,29 @@ function GestorScreen({ roomCode }) {
         const faltantes = Math.max(0, totalP - jugadas);
         const enCurso  = phase==="playing" && jugadas < totalP ? 1 : 0;
 
-        const ESTADOS_PARTIDA = [
-          {id:"limpio",       label:"Limpio",       color:"#aaa"},
-          {id:"A_trampa",     label:"A trampa",     color:"#eab308"},
-          {id:"B_trampa",     label:"B trampa",     color:"#3b82f6"},
-          {id:"ambos_trampa", label:"Ambos trampa", color:"#a855f7"},
+        const SITUACIONES = [
+          {id:"nadie_trampa",   label:"Nadie trampa",    color:"#aaa"},
+          {id:"yo_trampo",      label:"Yo trampo",       color:"#eab308"},
+          {id:"me_hacen_trampa",label:"Me hacen trampa", color:"#ef4444"},
+          {id:"ambos_trampa",   label:"Ambos trampa",    color:"#a855f7"},
         ];
-        const CONDICIONES = [
-          {id:"tramposo", label:"Tramposo", color:"#eab308"},
-          {id:"limpio",   label:"Limpio",   color:"#aaa"},
-        ];
+        function getSituacion(condJ, condR) {
+          if (condJ==="tramposo" && condR==="tramposo") return "ambos_trampa";
+          if (condJ==="tramposo") return "yo_trampo";
+          if (condR==="tramposo") return "me_hacen_trampa";
+          return "nadie_trampa";
+        }
         const statsMap = {};
         allPlayers.forEach(([uid,p])=>{
           const base = { nick:p.nickname, avatar:p.avatar, color:p.color, isBot:!!p.isBot,
             wins:0, losses:0, draws:0, played:0, bets:0, folds:0 };
-          ESTADOS_PARTIDA.forEach(e=>{ base[`w_${e.id}`]=0; base[`l_${e.id}`]=0; });
-          CONDICIONES.forEach(c=>{ base[`wc_${c.id}`]=0; base[`lc_${c.id}`]=0; });
+          SITUACIONES.forEach(s=>{ base[`w_${s.id}`]=0; base[`l_${s.id}`]=0; });
           statsMap[uid] = base;
         });
         Object.values(partidas||{}).forEach(partidaObj=>{
           Object.values(partidaObj||{}).forEach(pd=>{
             if (!pd.resultado) return;
             const [pA,pB] = pd.jugadores||[];
-            const est = pd.estadoPartida||"limpio";
             [pA,pB].forEach(pid=>{
               if (!statsMap[pid]) return;
               statsMap[pid].played++;
@@ -1465,10 +1471,10 @@ function GestorScreen({ roomCode }) {
               [pA,pB].forEach(pid=>{ if(statsMap[pid]) statsMap[pid].draws++; });
             } else {
               const loser = gan===pA?pB:pA;
-              const ganCond = pd.condicion?.[gan]||"limpio";
-              const losCond = pd.condicion?.[loser]||"limpio";
-              if (statsMap[gan])  { statsMap[gan].wins++;  statsMap[gan][`w_${est}`]++; statsMap[gan][`wc_${ganCond}`]++; }
-              if (statsMap[loser]){ statsMap[loser].losses++; statsMap[loser][`l_${est}`]++; statsMap[loser][`lc_${losCond}`]++; }
+              const ganSit = getSituacion(pd.condicion?.[gan]||"limpio", pd.condicion?.[loser]||"limpio");
+              const losSit = getSituacion(pd.condicion?.[loser]||"limpio", pd.condicion?.[gan]||"limpio");
+              if (statsMap[gan])  { statsMap[gan].wins++;  statsMap[gan][`w_${ganSit}`]++; }
+              if (statsMap[loser]){ statsMap[loser].losses++; statsMap[loser][`l_${losSit}`]++; }
             }
           });
         });
@@ -1481,29 +1487,21 @@ function GestorScreen({ roomCode }) {
         const sorted = Object.entries(statsMap).sort((a,b)=>(balance?.[b[0]]??10)-(balance?.[a[0]]??10));
         const maxBal = Math.max(1, ...sorted.map(([uid])=>balance?.[uid]??10));
 
-        const byMatchState = {};
-        ESTADOS_PARTIDA.forEach(e=>{ byMatchState[e.id]={wins:0,losses:0,draws:0,total:0}; });
-        const byCondicion = {};
-        CONDICIONES.forEach(c=>{ byCondicion[c.id]={wins:0,losses:0,draws:0,total:0}; });
+        const bySituacion = {};
+        SITUACIONES.forEach(s=>{ bySituacion[s.id]={wins:0,losses:0,draws:0,total:0}; });
         Object.values(partidas||{}).forEach(partidaObj=>{
           Object.values(partidaObj||{}).forEach(pd=>{
             if (!pd.resultado) return;
-            const est = pd.estadoPartida||"limpio";
             const [pA,pB] = pd.jugadores||[];
             const gan = pd.ganador;
-            if (byMatchState[est]) {
-              byMatchState[est].total++;
-              if (gan==="casa") byMatchState[est].draws++;
-              else if (gan===pA) byMatchState[est].wins++;
-              else byMatchState[est].losses++;
-            }
             [pA,pB].forEach(pid=>{
-              const cond = pd.condicion?.[pid]||"limpio";
-              if (!byCondicion[cond]) return;
-              byCondicion[cond].total++;
-              if (gan==="casa") byCondicion[cond].draws++;
-              else if (gan===pid) byCondicion[cond].wins++;
-              else byCondicion[cond].losses++;
+              const rival = pid===pA?pB:pA;
+              const sit = getSituacion(pd.condicion?.[pid]||"limpio", pd.condicion?.[rival]||"limpio");
+              if (!bySituacion[sit]) return;
+              bySituacion[sit].total++;
+              if (gan==="casa") bySituacion[sit].draws++;
+              else if (gan===pid) bySituacion[sit].wins++;
+              else bySituacion[sit].losses++;
             });
           });
         });
@@ -1574,48 +1572,21 @@ function GestorScreen({ roomCode }) {
               </div>
             </Card>
 
-            {/* Victorias por estado de partida */}
+            {/* Victorias y derrotas por situación — por jugador */}
             <Card accent="#22c55e">
-              <div style={{fontSize:11,color:"#555",marginBottom:10}}>VICTORIAS POR ESTADO DE PARTIDA</div>
+              <div style={{fontSize:11,color:"#555",marginBottom:10}}>RESULTADOS POR SITUACIÓN (por jugador)</div>
+              <div style={{fontSize:10,color:"#444",marginBottom:10}}>Victorias (W) y derrotas (L) según la situación en la que jugó cada jugador</div>
               {sorted.map(([uid,s])=>(
-                <div key={uid} style={{marginBottom:10}}>
+                <div key={uid} style={{marginBottom:12}}>
                   <div style={{fontSize:12,color:s.color,fontWeight:700,marginBottom:4}}>
                     {s.avatar} {s.nick}{s.isBot?" 🤖":""}
                   </div>
                   <div style={{display:"flex",gap:4}}>
-                    {ESTADOS_PARTIDA.map(e=>{
-                      const v = s[`w_${e.id}`]||0;
+                    {SITUACIONES.map(sit=>{
+                      const w = s[`w_${sit.id}`]||0;
+                      const l = s[`l_${sit.id}`]||0;
                       return (
-                        <div key={e.id} style={{flex:1,textAlign:"center"}}>
-                          <div style={{background:"#1e1e2e",borderRadius:4,height:20,position:"relative",overflow:"hidden"}}>
-                            <div style={{width:`${v?Math.max((v/Math.max(1,s.wins))*100,12):0}%`,
-                              background:e.color,borderRadius:4,height:"100%",transition:"width 0.5s"}}/>
-                            <span style={{position:"absolute",inset:0,fontSize:10,fontWeight:700,
-                              color:"#fff",lineHeight:"20px"}}>{v}</span>
-                          </div>
-                          <div style={{fontSize:8,color:e.color,marginTop:2}}>{e.label}</div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
-            </Card>
-
-            {/* Victorias por condición del jugador */}
-            <Card accent="#eab308">
-              <div style={{fontSize:11,color:"#555",marginBottom:10}}>VICTORIAS POR CONDICIÓN</div>
-              {sorted.map(([uid,s])=>(
-                <div key={uid} style={{marginBottom:10}}>
-                  <div style={{fontSize:12,color:s.color,fontWeight:700,marginBottom:4}}>
-                    {s.avatar} {s.nick}{s.isBot?" 🤖":""}
-                  </div>
-                  <div style={{display:"flex",gap:4}}>
-                    {CONDICIONES.map(c=>{
-                      const w = s[`wc_${c.id}`]||0;
-                      const l = s[`lc_${c.id}`]||0;
-                      return (
-                        <div key={c.id} style={{flex:1,textAlign:"center"}}>
+                        <div key={sit.id} style={{flex:1,textAlign:"center"}}>
                           <div style={{display:"flex",gap:2,marginBottom:2}}>
                             <div style={{flex:1,background:"#1e1e2e",borderRadius:4,height:20,position:"relative",overflow:"hidden"}}>
                               <div style={{width:`${w?Math.max((w/Math.max(1,s.wins))*100,15):0}%`,
@@ -1630,7 +1601,7 @@ function GestorScreen({ roomCode }) {
                                 color:"#fff",lineHeight:"20px"}}>{l}L</span>
                             </div>
                           </div>
-                          <div style={{fontSize:8,color:c.color,marginTop:2}}>{c.label}</div>
+                          <div style={{fontSize:8,color:sit.color,marginTop:2,lineHeight:1.2}}>{sit.label}</div>
                         </div>
                       );
                     })}
@@ -1639,10 +1610,10 @@ function GestorScreen({ roomCode }) {
               ))}
             </Card>
 
-            {/* Gráfico: ¿Hacer trampa beneficia? — por condición */}
+            {/* Gráfico: ¿Hacer trampa beneficia? — por situación del jugador */}
             <Card accent="#eab308">
               <div style={{fontSize:11,color:"#555",marginBottom:4}}>¿HACER TRAMPA BENEFICIA?</div>
-              <div style={{fontSize:10,color:"#444",marginBottom:12}}>Win rate (%) por condición del jugador — Tramposo vs Limpio</div>
+              <div style={{fontSize:10,color:"#444",marginBottom:12}}>Win rate (%) según la situación del jugador — junta A trampa y B trampa porque son equivalentes</div>
               <div style={{position:"relative",height:chartH,marginBottom:24}}>
                 {[0,25,50,75,100].map(v=>(
                   <div key={v} style={{position:"absolute",left:0,bottom:`${(v/maxRate)*100}%`,width:"100%",
@@ -1652,12 +1623,12 @@ function GestorScreen({ roomCode }) {
                 ))}
                 <div style={{position:"absolute",left:30,right:0,bottom:0,top:0,display:"flex",alignItems:"flex-end",
                   justifyContent:"space-around",gap:8}}>
-                  {CONDICIONES.map(c=>{
-                    const d = byCondicion[c.id];
+                  {SITUACIONES.map(sit=>{
+                    const d = bySituacion[sit.id];
                     const wr = d.total ? (d.wins/d.total)*100 : 0;
                     const lr = d.total ? (d.losses/d.total)*100 : 0;
                     return (
-                      <div key={c.id} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
+                      <div key={sit.id} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
                         <div style={{display:"flex",gap:2,alignItems:"flex-end",height:chartH-20,width:"100%"}}>
                           <div style={{flex:1,display:"flex",flexDirection:"column",justifyContent:"flex-end",alignItems:"center"}}>
                             <span style={{fontSize:9,color:"#22c55e",fontWeight:700}}>{Math.round(wr)}%</span>
@@ -1670,7 +1641,7 @@ function GestorScreen({ roomCode }) {
                               height:`${(lr/maxRate)*(chartH-30)}px`,transition:"height 0.5s",minHeight:lr>0?2:0}}/>
                           </div>
                         </div>
-                        <div style={{fontSize:9,color:c.color,fontWeight:700,textAlign:"center",lineHeight:1.2}}>{c.label}</div>
+                        <div style={{fontSize:9,color:sit.color,fontWeight:700,textAlign:"center",lineHeight:1.2}}>{sit.label}</div>
                       </div>
                     );
                   })}
@@ -1681,53 +1652,7 @@ function GestorScreen({ roomCode }) {
                 <span><span style={{display:"inline-block",width:10,height:10,background:"#ef4444",borderRadius:2,marginRight:4}}/>Derrotas</span>
               </div>
               <div style={{fontSize:10,color:"#555",marginTop:8,textAlign:"center",lineHeight:1.5}}>
-                n = {CONDICIONES.map(c=>`${c.label}: ${byCondicion[c.id].total}`).join(" · ")}
-              </div>
-            </Card>
-
-            {/* Gráfico: Win rate por estado de partida */}
-            <Card accent="#a855f7">
-              <div style={{fontSize:11,color:"#555",marginBottom:4}}>WIN RATE POR ESTADO DE PARTIDA</div>
-              <div style={{fontSize:10,color:"#444",marginBottom:12}}>Victorias y derrotas según el tipo de partida (Jugador A es jugadores[0])</div>
-              <div style={{position:"relative",height:chartH,marginBottom:24}}>
-                {[0,25,50,75,100].map(v=>(
-                  <div key={v} style={{position:"absolute",left:0,bottom:`${(v/maxRate)*100}%`,width:"100%",
-                    borderBottom:"1px solid #1e1e2e",fontSize:9,color:"#444"}}>
-                    <span style={{position:"absolute",left:0,top:-10}}>{v}%</span>
-                  </div>
-                ))}
-                <div style={{position:"absolute",left:30,right:0,bottom:0,top:0,display:"flex",alignItems:"flex-end",
-                  justifyContent:"space-around",gap:8}}>
-                  {ESTADOS_PARTIDA.map(e=>{
-                    const d = byMatchState[e.id];
-                    const wr = d.total ? (d.wins/d.total)*100 : 0;
-                    const lr = d.total ? (d.losses/d.total)*100 : 0;
-                    return (
-                      <div key={e.id} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
-                        <div style={{display:"flex",gap:2,alignItems:"flex-end",height:chartH-20,width:"100%"}}>
-                          <div style={{flex:1,display:"flex",flexDirection:"column",justifyContent:"flex-end",alignItems:"center"}}>
-                            <span style={{fontSize:9,color:"#22c55e",fontWeight:700}}>{Math.round(wr)}%</span>
-                            <div style={{width:"100%",background:"#22c55e",borderRadius:"4px 4px 0 0",
-                              height:`${(wr/maxRate)*(chartH-30)}px`,transition:"height 0.5s",minHeight:wr>0?2:0}}/>
-                          </div>
-                          <div style={{flex:1,display:"flex",flexDirection:"column",justifyContent:"flex-end",alignItems:"center"}}>
-                            <span style={{fontSize:9,color:"#ef4444",fontWeight:700}}>{Math.round(lr)}%</span>
-                            <div style={{width:"100%",background:"#ef4444",borderRadius:"4px 4px 0 0",
-                              height:`${(lr/maxRate)*(chartH-30)}px`,transition:"height 0.5s",minHeight:lr>0?2:0}}/>
-                          </div>
-                        </div>
-                        <div style={{fontSize:9,color:e.color,fontWeight:700,textAlign:"center",lineHeight:1.2}}>{e.label}</div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-              <div style={{display:"flex",gap:16,justifyContent:"center",fontSize:11}}>
-                <span><span style={{display:"inline-block",width:10,height:10,background:"#22c55e",borderRadius:2,marginRight:4}}/>Victorias</span>
-                <span><span style={{display:"inline-block",width:10,height:10,background:"#ef4444",borderRadius:2,marginRight:4}}/>Derrotas</span>
-              </div>
-              <div style={{fontSize:10,color:"#555",marginTop:8,textAlign:"center",lineHeight:1.5}}>
-                n = {ESTADOS_PARTIDA.map(e=>`${e.label}: ${byMatchState[e.id].total}`).join(" · ")}
+                n = {SITUACIONES.map(s=>`${s.label}: ${bySituacion[s.id].total}`).join(" · ")}
               </div>
             </Card>
 
