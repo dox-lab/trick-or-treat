@@ -106,13 +106,15 @@ function estimateWinProb(myPrivate, publicVisible, samples=600, knownRivalDice=[
   const pubRemaining = 2 - publicVisible.length;
   let wins = 0;
   for (let i = 0; i < samples; i++) {
-    const pub = [...publicVisible];
+    const pub    = [...publicVisible];
     for (let j = 0; j < pubRemaining; j++) pub.push(roll());
-    const my  = top3score(myPrivate, pub).score;
-    const rd  = [...knownRivalDice];
+    const myRes  = top3score(myPrivate, pub);
+    const rd     = [...knownRivalDice];
     while (rd.length < 2) rd.push(roll());
-    const opp = top3score(rd, pub).score;
-    if (my > opp) wins++;
+    const oppRes = top3score(rd, pub);
+    const iWin   = (myRes.tresumos && !oppRes.tresumos) ||
+                   (!myRes.tresumos && !oppRes.tresumos && myRes.score > oppRes.score);
+    if (iWin) wins++;
   }
   return wins / samples;
 }
@@ -122,16 +124,20 @@ function estimateProbs(myPrivate, publicVisible, knownRivalDice=[], samples=500)
   const hasCheat = knownRivalDice.length > 0;
   let myW=0, rivW=0, myWC=0, rivWC=0;
   for (let i = 0; i < samples; i++) {
-    const pub = [...publicVisible];
+    const pub   = [...publicVisible];
     for (let j = 0; j < pubRemaining; j++) pub.push(roll());
-    const my = top3score(myPrivate, pub).score;
-    const rd1 = [roll(), roll()];
-    const o1  = top3score(rd1, pub).score;
-    if (my > o1) myW++; else if (o1 > my) rivW++;
+    const myRes = top3score(myPrivate, pub);
+    const rd1   = [roll(), roll()];
+    const o1Res = top3score(rd1, pub);
+    const iWin1 = (myRes.tresumos && !o1Res.tresumos) || (!myRes.tresumos && !o1Res.tresumos && myRes.score > o1Res.score);
+    const rWin1 = (!myRes.tresumos && o1Res.tresumos) || (!myRes.tresumos && !o1Res.tresumos && o1Res.score > myRes.score);
+    if (iWin1) myW++; else if (rWin1) rivW++;
     if (hasCheat) {
-      const rd2 = [...knownRivalDice]; while(rd2.length<2) rd2.push(roll());
-      const o2  = top3score(rd2, pub).score;
-      if (my > o2) myWC++; else if (o2 > my) rivWC++;
+      const rd2   = [...knownRivalDice]; while(rd2.length<2) rd2.push(roll());
+      const o2Res = top3score(rd2, pub);
+      const iWin2 = (myRes.tresumos && !o2Res.tresumos) || (!myRes.tresumos && !o2Res.tresumos && myRes.score > o2Res.score);
+      const rWin2 = (!myRes.tresumos && o2Res.tresumos) || (!myRes.tresumos && !o2Res.tresumos && o2Res.score > myRes.score);
+      if (iWin2) myWC++; else if (rWin2) rivWC++;
     }
   }
   return {
@@ -361,6 +367,7 @@ function HomeScreen({ onGestor, onJoin }) {
           ["🏆","Tu score es la suma de los 3 dados más altos entre tus privados y los públicos visibles."],
           ["💰","En cada ronda decides: apostar (+1 ficha al pozo) o retirarte y ceder el pozo al rival."],
           ["⚔️","Si ambos apuestan las 3 rondas, gana quien tenga mayor score. Empate = la casa gana."],
+          ["1️⃣","¡Victoria especial! Si tu top-3 final es tres unos (1+1+1), ganas automáticamente sin importar el score rival. Si ambos tienen tres unos, la casa gana el pozo."],
           ["👁️","En algunas partidas tendrás ventaja: podrás espiar un dado de tu rival."],
         ].map(([icon,text])=>(
           <div key={icon} style={{display:"flex",gap:8,marginBottom:6,alignItems:"flex-start"}}>
@@ -674,8 +681,9 @@ async function resolveRondaDB(roomCode, room, n, pairKey, pd, ronda, pidA, decA,
     upds[`partidas/${n}/${pairKey}/best3A`]        = resA.best3;
     upds[`partidas/${n}/${pairKey}/best3B`]        = resB.best3;
     await update(ref(db,`rooms/${roomCode}`), upds);
-    const motivo = resA.tresumos||resB.tresumos ? "Tres unos" :
-                   ganador==="casa"              ? "Empate"    : "Mayor suma";
+    const motivo = (resA.tresumos && resB.tresumos) ? "Ambos tres unos" :
+                   (resA.tresumos || resB.tresumos)  ? "Tres unos" :
+                   ganador==="casa"                   ? "Empate"    : "Mayor suma";
     await finalizarPartidaDB(roomCode, {...room, balance:{...room.balance,...{[pidA]:balA-1,[pidB]:balB-1}}},
       n, pairKey, {...pd, pot:newPot}, ganador, motivo);
   } else {
@@ -695,8 +703,9 @@ async function finalizarPartidaDB(roomCode, room, n, pairKey, pd, ganador, motiv
 
   if (ganador==="casa") {
     // Casa se lleva todo: ningún jugador gana fichas extra, el pot desaparece
-    res = motivo==="Empate" ? "🏠 Empate — La casa gana el pozo" :
+    res = motivo==="Empate"          ? "🏠 Empate — La casa gana el pozo" :
           motivo==="Ambos retirados" ? "🏠 Ambos se retiraron — La casa gana" :
+          motivo==="Ambos tres unos" ? "🏠 Ambos tienen tres unos — La casa gana el pozo" :
           `🏠 Casa gana (${motivo})`;
   } else {
     if (ganador===p1) b1+=pot; else b2+=pot;
@@ -1070,7 +1079,7 @@ function GestorScreen({ roomCode }) {
         const resultado = pd.resultado||"";
         const motivo = resultado.includes("Empate") ? "empate"
           : resultado.includes("retirar")||resultado.includes("Retirada") ? "retiro"
-          : resultado.includes("Tres unos") ? "tres_unos"
+          : resultado.toLowerCase().includes("tres unos") ? "tres_unos"
           : resultado.includes("Mayor suma") ? "mayor_suma"
           : resultado.includes("Casa") ? "casa" : "";
 
@@ -2372,6 +2381,7 @@ function PlayerMenu({ onLeave, players, balance, playerId, roomCode }) {
             ["💰 Rondas","Hay 3 rondas. En cada una decides: apostar (+1 ficha al pozo) o retirarte."],
             ["🏠 Retirarse","Si te retiras, el rival gana el pozo. Si ambos se retiran, la casa gana."],
             ["⚖️ Empate","Si ambos apuestan las 3 rondas y el score es igual, la casa gana el pozo."],
+            ["1️⃣ Tres unos","¡Victoria automática! Si tu top-3 final es [1,1,1], ganas sin importar el score rival. Si ambos tienen tres unos, es empate y la casa gana el pozo."],
             ["👁️ Estados","En algunas partidas tendrás ventaja: podrás ver un dado del rival. El estado de la partida determina quién puede espiar."],
           ].map(([t,d])=>(
             <div key={t} style={{marginBottom:10}}>
