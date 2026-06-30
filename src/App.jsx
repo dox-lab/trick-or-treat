@@ -1123,9 +1123,11 @@ function GestorScreen({ roomCode }) {
           if (!snap.exists()||snap.val().resultado) return;
           if (snap.val().decisiones?.[decKey]) return;
           await update(ref(db,`rooms/${roomCode}/partidas/${n}/${pairKey}/decisiones`),{[decKey]:decision});
-          const rival  = pid===pidA?pidB:pidA;
-          const ev     = calcEV(myDice,pub);
-          const logRef = push(ref(db,`rooms/${roomCode}/logs`));
+          const rival   = pid===pidA?pidB:pidA;
+          const ev      = calcEV(myDice,pub);
+          const pdFresh = snap.val();
+          const tiempo  = Math.max(0, Date.now()-(pdFresh?.startedAt||Date.now()));
+          const logRef  = push(ref(db,`rooms/${roomCode}/logs`));
           await set(logRef,{
             partida:n,pairKey,jugador:pid,rival,
             nickname_jugador:room.players?.[pid]?.nickname||pid,
@@ -1142,7 +1144,7 @@ function GestorScreen({ roomCode }) {
             pub_revelados:ronda-1,
             score_parcial:top3score(myDice,pub).score,
             win_prob:parseFloat(estimateWinProb(myDice,pub).toFixed(3)),
-            tiempo_decision_ms:Date.now()-(pd.startedAt||Date.now()),
+            tiempo_decision_ms:tiempo,
             resultado:null,ts:Date.now(),
           });
           const snap2 = await get(ref(db,`rooms/${roomCode}/partidas/${n}/${pairKey}`));
@@ -1259,11 +1261,15 @@ function GestorScreen({ roomCode }) {
         const snap2 = await get(ref(db,`rooms/${roomCode}/partidas/${n}/${pairKey}`));
         if (!snap2.exists()||snap2.val().resultado) return;
 
-        const decKey = `${ronda}_${pid}`;
+        const decKey   = `${ronda}_${pid}`;
+        const checkSnap = await get(ref(db,`rooms/${roomCode}/partidas/${n}/${pairKey}/decisiones/${decKey}`));
+        if (checkSnap.exists()) return;
         await update(ref(db,`rooms/${roomCode}/partidas/${n}/${pairKey}/decisiones`),{[decKey]:decision});
 
         const rival   = pid===pidA?pidB:pidA;
         const ev      = calcEV(myDice,pub);
+        const pdFresh = snap2.val();
+        const tiempo  = Math.max(0, Date.now()-(pdFresh?.startedAt||Date.now()));
         const logRef  = push(ref(db,`rooms/${roomCode}/logs`));
         await set(logRef,{
           partida:n,pairKey,jugador:pid,rival,
@@ -1281,7 +1287,7 @@ function GestorScreen({ roomCode }) {
           pub_revelados:ronda-1,
           score_parcial:top3score(myDice,pub).score,
           win_prob:parseFloat(estimateWinProb(myDice,pub).toFixed(3)),
-          tiempo_decision_ms:Date.now()-(pdC.startedAt||Date.now()),
+          tiempo_decision_ms:tiempo,
           resultado:null,ts:Date.now(),
         });
 
@@ -2623,7 +2629,7 @@ function PlayerScreen({ roomCode, playerId, profile, onLeave }) {
     const myDice= pd.dados?.[playerId]||[];
     const pubVis= (pd.publicos||[]).slice(0,ronda-1);
     const ev    = calcEV(myDice,pubVis);
-    const tiempo= Date.now()-(pd.startedAt||Date.now());
+    const tiempo= Math.max(0, Date.now()-(pd.startedAt||Date.now()));
 
     setDecidido(true);
     clearTimeout(autoFoldRef.current);
