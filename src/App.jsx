@@ -1055,7 +1055,8 @@ function GestorScreen({ roomCode }) {
   const [tab,        setTab]       = useState("control");
   const [cfgLocal,   setCfgLocal]  = useState(null);
   const [botCountL,  setBotCountL]  = useState(0);
-  const [botStratsL, setBotStratsL] = useState([]);
+  const [botStratsL,    setBotStratsL]    = useState([]);
+  const [datosVerTodas, setDatosVerTodas] = useState(false);
 
   useEffect(()=>{
     const r = ref(db,`rooms/${roomCode}`);
@@ -1134,6 +1135,14 @@ function GestorScreen({ roomCode }) {
             condicion_jugador:pd.condicion?.[pid]||"limpio",
             suma_propia:myDice.reduce((a,b)=>a+b,0),
             suma_publica:pub.reduce((a,b)=>a+b,0),
+            dado_priv_1:myDice[0]||null, dado_priv_2:myDice[1]||null,
+            pub_1:pd.publicos?.[0]||null, pub_2:pd.publicos?.[1]||null,
+            pub_visible_1:ronda>=2?pd.publicos?.[0]||null:null,
+            pub_visible_2:ronda>=3?pd.publicos?.[1]||null:null,
+            pub_revelados:ronda-1,
+            score_parcial:top3score(myDice,pub).score,
+            win_prob:parseFloat(estimateWinProb(myDice,pub).toFixed(3)),
+            tiempo_decision_ms:Date.now()-(pd.startedAt||Date.now()),
             resultado:null,ts:Date.now(),
           });
           const snap2 = await get(ref(db,`rooms/${roomCode}/partidas/${n}/${pairKey}`));
@@ -1265,6 +1274,14 @@ function GestorScreen({ roomCode }) {
           condicion_jugador:pdC.condicion?.[pid]||"limpio",
           suma_propia:myDice.reduce((a,b)=>a+b,0),
           suma_publica:pub.reduce((a,b)=>a+b,0),
+          dado_priv_1:myDice[0]||null, dado_priv_2:myDice[1]||null,
+          pub_1:pdC.publicos?.[0]||null, pub_2:pdC.publicos?.[1]||null,
+          pub_visible_1:ronda>=2?pdC.publicos?.[0]||null:null,
+          pub_visible_2:ronda>=3?pdC.publicos?.[1]||null:null,
+          pub_revelados:ronda-1,
+          score_parcial:top3score(myDice,pub).score,
+          win_prob:parseFloat(estimateWinProb(myDice,pub).toFixed(3)),
+          tiempo_decision_ms:Date.now()-(pdC.startedAt||Date.now()),
           resultado:null,ts:Date.now(),
         });
 
@@ -1355,47 +1372,47 @@ function GestorScreen({ roomCode }) {
 
   const exportDecisionesCSV = () => {
     const pl      = room?.players || {};
-    const pts     = room?.partidas || {};
-    const rawLogs = Object.values(room?.logs || {}).sort((a,b) => a.ts - b.ts);
-    const decLogs = rawLogs.filter(l => l.accion !== "resultado");
+    const rawLogs = Object.values(room?.logs || {}).filter(l => l.accion !== "resultado");
+
+    rawLogs.sort((a,b) =>
+      (a.partida - b.partida) ||
+      (a.ronda   - b.ronda)   ||
+      (a.pairKey || "").localeCompare(b.pairKey || "") ||
+      (a.nickname_jugador || "").localeCompare(b.nickname_jugador || "")
+    );
 
     const cols = [
-      "partida","ronda","pairKey",
-      "jugador_uid","jugador_nombre","rival_uid","rival_nombre",
-      "es_bot","estrategia_bot",
+      "partida","ronda","par","jugador_nombre","rival_nombre","es_bot",
       "estado_partida","condicion_jugador",
-      "dado_priv_1","dado_priv_2","pub_visible_1","pub_visible_2",
-      "score_parcial","ev","tiempo_ms","decision","rival_ya_habia_decidido",
+      "dado_priv_1","dado_priv_2","pub_1","pub_2",
+      "pub_visible_1","pub_visible_2","pub_revelados",
+      "score_parcial","win_prob","ev",
+      "decision","tiempo_decision_ms",
     ];
 
-    const rows = decLogs.map(l => {
-      const pd     = pts[l.partida]?.[l.pairKey] || {};
-      const myDice = pd.dados?.[l.jugador] || [];
-      const pub    = pd.publicos || [];
-      const pubVis = pub.slice(0, (l.ronda || 1) - 1);
-      const score  = top3score(myDice, pubVis).score;
+    const rows = rawLogs.map(l => {
+      const ronda  = l.ronda || 1;
       const pInfo  = pl[l.jugador] || {};
-      const rInfo  = pl[l.rival]   || {};
-      const rivalYa = rawLogs.some(r2 =>
-        r2.partida === l.partida && r2.pairKey === l.pairKey &&
-        r2.ronda === l.ronda && r2.jugador === l.rival &&
-        r2.accion !== "resultado" && r2.ts < l.ts
-      );
+      const pv1    = l.pub_visible_1 != null ? l.pub_visible_1 : (ronda >= 2 ? l.pub_1 ?? "" : "");
+      const pv2    = l.pub_visible_2 != null ? l.pub_visible_2 : (ronda >= 3 ? l.pub_2 ?? "" : "");
       return [
-        l.partida, l.ronda, l.pairKey,
-        l.jugador, pInfo.nickname || l.jugador,
-        l.rival,   rInfo.nickname || l.rival,
+        l.partida,
+        ronda,
+        l.pairKey || "",
+        l.nickname_jugador || pInfo.nickname || l.jugador || "",
+        l.nickname_rival   || "",
         pInfo.isBot ? "TRUE" : "FALSE",
-        pInfo.strategy || "",
-        l.estado_partida || "",
+        l.estado_partida    || "",
         l.condicion_jugador || "",
-        myDice[0] ?? "", myDice[1] ?? "",
-        pubVis[0] ?? "", pubVis[1] ?? "",
-        score,
+        l.dado_priv_1 ?? "", l.dado_priv_2 ?? "",
+        l.pub_1 ?? "",       l.pub_2 ?? "",
+        pv1,                 pv2,
+        l.pub_revelados ?? ronda - 1,
+        l.score_parcial ?? "",
+        l.win_prob      ?? "",
         ((l.ev || 0) * 100).toFixed(1),
-        l.tiempo_ms ?? "",
         l.accion,
-        rivalYa ? "TRUE" : "FALSE",
+        l.tiempo_decision_ms ?? l.tiempo_ms ?? "",
       ];
     });
 
@@ -1403,52 +1420,72 @@ function GestorScreen({ roomCode }) {
   };
 
   const exportResultadosCSV = () => {
-    const pl      = room?.players || {};
-    const pts     = room?.partidas || {};
-    const rawLogs = Object.values(room?.logs || {}).sort((a,b) => a.ts - b.ts);
-    const resLogs = rawLogs.filter(l => l.accion === "resultado");
+    const pl  = room?.players || {};
+    const pts = room?.partidas || {};
+
+    const resLogs = Object.values(room?.logs || {})
+      .filter(l => l.accion === "resultado")
+      .sort((a,b) => (a.partida - b.partida) || (a.pairKey || "").localeCompare(b.pairKey || ""));
 
     const cols = [
-      "partida","pairKey",
-      "ganador_uid","ganador_nombre","perdedor_uid","perdedor_nombre",
-      "estado_partida","condicion_ganador","condicion_perdedor",
-      "score_ganador","score_perdedor","best3_ganador","best3_perdedor",
-      "pot_final","gano_casa","motivo","duracion_ms",
+      "partida","par","estado_partida",
+      "ganador_nombre","ganador_es_bot","condicion_ganador",
+      "perdedor_nombre","perdedor_es_bot","condicion_perdedor",
+      "dado_priv_ganador_1","dado_priv_ganador_2",
+      "dado_priv_perdedor_1","dado_priv_perdedor_2",
+      "pub_1","pub_2",
+      "best3_ganador","score_ganador",
+      "best3_perdedor","score_perdedor",
+      "pot_final","gano_casa","motivo",
     ];
 
     const rows = resLogs.map(l => {
-      const pd       = pts[l.partida]?.[l.pairKey] || {};
-      const [pA, pB] = pd.jugadores || [];
-      const ganador  = l.jugador;
-      const gCasa    = ganador === "casa";
-      const perdedor = gCasa ? "" : (ganador === pA ? pB : pA);
-      const ganNick  = gCasa ? "casa" : (pl[ganador]?.nickname || ganador);
-      const perNick  = perdedor ? (pl[perdedor]?.nickname || perdedor) : "";
-      const condGan  = gCasa ? "" : (pd.condicion?.[ganador] || "");
-      const condPer  = perdedor ? (pd.condicion?.[perdedor] || "") : "";
-      const scoreGan = gCasa ? "" : (ganador === pA ? pd.scoreA : pd.scoreB) ?? "";
-      const scorePer = gCasa ? "" : (perdedor === pA ? pd.scoreA : pd.scoreB) ?? "";
-      const best3Gan = gCasa ? "" : (ganador  === pA ? pd.best3A : pd.best3B || []).join("+");
-      const best3Per = gCasa ? "" : (perdedor === pA ? pd.best3A : pd.best3B || []).join("+");
-      const res      = l.resultado || pd.resultado || "";
-      const motivo   = res.includes("Empate")  ? "empate"
-        : res.includes("retirar") || res.includes("Retirada") ? "retiro"
-        : res.toLowerCase().includes("tres unos") ? "tres_unos"
-        : res.includes("Mayor suma") ? "mayor_suma"
-        : res.includes("Casa") ? "casa" : "";
-      const firstTs  = rawLogs.find(r2 =>
-        r2.partida === l.partida && r2.pairKey === l.pairKey && r2.accion !== "resultado"
-      )?.ts;
-      const duracion = firstTs && l.ts ? l.ts - firstTs : "";
+      const pd        = pts[l.partida]?.[l.pairKey] || {};
+      const [pA, pB]  = pd.jugadores || [];
+      const ganUID    = l.jugador || l.ganador || "";
+      const gCasa     = ganUID === "casa";
+      const perUID    = gCasa ? "" : (ganUID === pA ? pB : pA) || "";
+
+      const ganNick   = gCasa ? "Casa"   : (pl[ganUID]?.nickname || ganUID || "");
+      const perNick   = gCasa ? "Empate/Retiro" : (pl[perUID]?.nickname || perUID || "");
+      const ganBot    = gCasa ? "" : (pl[ganUID]?.isBot ? "TRUE" : "FALSE");
+      const perBot    = gCasa ? "" : (pl[perUID]?.isBot ? "TRUE" : "FALSE");
+      const condGan   = gCasa ? "" : (pd.condicion?.[ganUID] || "");
+      const condPer   = gCasa ? "" : (pd.condicion?.[perUID] || "");
+
+      const isGanA    = ganUID === pA;
+      const scoreGan  = gCasa ? "" : ((isGanA ? pd.scoreA : pd.scoreB) ?? "");
+      const scorePer  = gCasa ? "" : ((isGanA ? pd.scoreB : pd.scoreA) ?? "");
+      const best3Gan  = gCasa ? "" : ((isGanA ? pd.best3A : pd.best3B) || []).join("+");
+      const best3Per  = gCasa ? "" : ((isGanA ? pd.best3B : pd.best3A) || []).join("+");
+
+      const dGan      = pd.dados?.[ganUID] || [];
+      const dPer      = pd.dados?.[perUID] || [];
+      const pub       = pd.publicos || [];
+
+      const res       = l.resultado || pd.resultado || "";
+      const resL      = res.toLowerCase();
+      const motivo    = resL.includes("tres unos") ? "tres_unos"
+        : res.includes("Mayor suma")                 ? "mayor_suma"
+        : resL.includes("retirar") || resL.includes("retirada") ? "retiro"
+        : resL.includes("empate")                    ? "empate"
+        : resL.includes("casa")                      ? "casa"
+        : "";
+
       return [
-        l.partida, l.pairKey,
-        ganador, ganNick, perdedor, perNick,
-        l.estado_partida || "",
-        condGan, condPer,
-        scoreGan, scorePer, best3Gan, best3Per,
-        pd.pot || 2,
+        l.partida     ?? "",
+        l.pairKey     || "",
+        l.estado_partida || pd.estadoPartida || "",
+        ganNick, ganBot, condGan,
+        perNick, perBot, condPer,
+        dGan[0] ?? "", dGan[1] ?? "",
+        dPer[0] ?? "", dPer[1] ?? "",
+        pub[0]  ?? "", pub[1]  ?? "",
+        best3Gan, scoreGan,
+        best3Per, scorePer,
+        pd.pot  ?? 2,
         gCasa ? "TRUE" : "FALSE",
-        motivo, duracion,
+        motivo,
       ];
     });
 
@@ -1989,149 +2026,193 @@ function GestorScreen({ roomCode }) {
               </div>
             </Card>
 
-            {/* SECCIÓN 3 — Barras SVG: ratio de victoria por condición */}
+            {/* SECCIÓN 3 — Evidencia de ventaja por trampa */}
             {(()=>{
-              const CONDS = [
-                {id:"limpio",       label:"Limpio",       color:"#aaa"},
-                {id:"yo_trampo",    label:"Yo trampo",    color:"#eab308"},
-                {id:"rival_trampa", label:"Rival trampa", color:"#ef4444"},
-                {id:"ambos_trampa", label:"Ambos",        color:"#a855f7"},
+              const SITS = [
+                {id:"limpio",       label:"🎯 Limpio",       color:"#aaa"},
+                {id:"yo_trampo",    label:"🃏 Yo trampo",    color:"#eab308"},
+                {id:"rival_trampa", label:"👁 Rival trampa", color:"#ef4444"},
+                {id:"ambos_trampa", label:"⚔️ Ambos trampa", color:"#a855f7"},
               ];
-              const byC = {};
-              CONDS.forEach(c=>{ byC[c.id]={total:0,wins:0}; });
+              const byS = {};
+              SITS.forEach(s=>{ byS[s.id]={wins:0,losses:0}; });
 
               resLogs.forEach(l=>{
                 const pd      = partidas?.[l.partida]?.[l.pairKey]||{};
                 const [pA,pB] = pd.jugadores||[];
                 if (!pA||!pB) return;
                 const gCasa   = l.jugador==="casa";
-
                 [pA,pB].forEach(uid=>{
-                  const rival  = uid===pA?pB:pA;
-                  const condJ  = pd.condicion?.[uid]||"limpio";
-                  const condR  = pd.condicion?.[rival]||"limpio";
-                  let sit;
-                  if (condJ==="tramposo"&&condR==="tramposo") sit="ambos_trampa";
-                  else if (condJ==="tramposo")                sit="yo_trampo";
-                  else if (condR==="tramposo")                sit="rival_trampa";
-                  else                                        sit="limpio";
-                  if (!byC[sit]) return;
-                  byC[sit].total++;
-                  if (!gCasa && l.jugador===uid) byC[sit].wins++;
+                  const rival = uid===pA?pB:pA;
+                  const cJ    = pd.condicion?.[uid]||"limpio";
+                  const cR    = pd.condicion?.[rival]||"limpio";
+                  const sit   = cJ==="tramposo"&&cR==="tramposo" ? "ambos_trampa"
+                              : cJ==="tramposo"                   ? "yo_trampo"
+                              : cR==="tramposo"                   ? "rival_trampa"
+                              : "limpio";
+                  if (!byS[sit]) return;
+                  if (!gCasa && l.jugador===uid) byS[sit].wins++;
+                  else if (!gCasa)               byS[sit].losses++;
                 });
               });
 
-              const BAR_MAX = 160;
-              const ROW_H   = 36;
-              const SVG_W   = 300;
-              const SVG_H   = CONDS.length * ROW_H + 20;
+              const K       = config?.K || 5;
+              const limpio  = byS.limpio;
+              const wrL     = (limpio.wins+limpio.losses)>0
+                ? limpio.wins/(limpio.wins+limpio.losses) : null;
 
               return (
                 <Card accent="#eab308">
                   <div style={{fontSize:11,color:"#555",fontWeight:700,marginBottom:12,letterSpacing:1}}>
-                    ¿HACER TRAMPA BENEFICIA? — RATIO DE VICTORIA
+                    EVIDENCIA DE VENTAJA POR TRAMPA
                   </div>
-                  <svg width={SVG_W} height={SVG_H} style={{display:"block",overflow:"visible"}}>
-                    {CONDS.map((c,i)=>{
-                      const {total,wins} = byC[c.id];
-                      const ratio  = total>0 ? wins/total : 0;
-                      const barW   = Math.round(ratio * BAR_MAX);
-                      const pct    = total>0 ? Math.round(ratio*100) : null;
-                      const y      = i * ROW_H + 10;
-                      const barY   = y + 10;
-                      return (
-                        <g key={c.id}>
-                          {/* Etiqueta izquierda */}
-                          <text x={0} y={barY+12} fontSize={11} fill={c.color} fontWeight={700}
-                            fontFamily="inherit">{c.label}</text>
-                          {/* Fondo barra */}
-                          <rect x={80} y={barY} width={BAR_MAX} height={18}
-                            rx={5} fill="#1e1e2e"/>
-                          {/* Barra rellena */}
-                          {barW>0&&(
-                            <rect x={80} y={barY} width={barW} height={18}
-                              rx={5} fill={c.color} opacity={0.85}/>
-                          )}
-                          {/* Porcentaje */}
-                          <text x={80+BAR_MAX+8} y={barY+13} fontSize={11}
-                            fill={pct===null?"#444":pct>=50?"#22c55e":"#ef4444"}
-                            fontWeight={700} fontFamily="inherit">
-                            {pct===null?"—":`${pct}%`}
-                          </text>
-                          {/* n */}
-                          <text x={80+BAR_MAX+8} y={barY+25} fontSize={9}
-                            fill="#444" fontFamily="inherit">
-                            {total>0?`n=${total}`:"sin datos"}
-                          </text>
-                        </g>
-                      );
-                    })}
-                  </svg>
-                  <div style={{fontSize:10,color:"#444",marginTop:4}}>
-                    Victorias de jugadores / partidas completadas (excluye empates con la casa)
+                  <div style={{overflowX:"auto"}}>
+                    <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                      <thead>
+                        <tr style={{borderBottom:"1px solid #1e1e2e"}}>
+                          {["Condición","N","Win rate","vs Limpio","Evidencia"].map(h=>(
+                            <th key={h} style={{padding:"5px 8px",textAlign:"left",color:"#444",
+                              fontWeight:700,fontSize:11,whiteSpace:"nowrap"}}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {SITS.map(s=>{
+                          const {wins,losses} = byS[s.id];
+                          const n   = wins+losses;
+                          const wr  = n>0 ? wins/n : null;
+                          const diff= (wr!=null&&wrL!=null) ? wr-wrL : null;
+                          const ev  = wr==null ? "—"
+                            : n < K             ? "⏳ datos insuf."
+                            : diff==null        ? "—"
+                            : Math.abs(diff)<0.05 ? "→ Sin efecto claro"
+                            : diff>0              ? "📈 Ventaja detectada"
+                            :                       "📉 Desventaja detectada";
+                          const evColor = ev.startsWith("📈")?"#22c55e"
+                            : ev.startsWith("📉")?"#ef4444"
+                            : ev.startsWith("⏳")?"#555":"#aaa";
+                          return (
+                            <tr key={s.id} style={{borderBottom:"1px solid #0f0f1a"}}>
+                              <td style={{padding:"6px 8px",color:s.color,fontWeight:700}}>{s.label}</td>
+                              <td style={{padding:"6px 8px",color:"#aaa",fontFamily:"monospace"}}>{n}</td>
+                              <td style={{padding:"6px 8px",color:"#f97316",fontFamily:"monospace"}}>
+                                {wr!=null?`${Math.round(wr*100)}%`:"—"}
+                              </td>
+                              <td style={{padding:"6px 8px",fontFamily:"monospace",
+                                color:diff==null?"#555":diff>0?"#22c55e":"#ef4444"}}>
+                                {diff!=null?(diff>0?"+":"")+Math.round(diff*100)+"pp":"—"}
+                              </td>
+                              <td style={{padding:"6px 8px",color:evColor,fontSize:11}}>{ev}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div style={{fontSize:10,color:"#444",marginTop:8}}>
+                    Win rate = victorias / (victorias + derrotas), excluye la casa. pp = puntos porcentuales vs. condición limpia.
                   </div>
                 </Card>
               );
             })()}
 
-            {/* SECCIÓN 4 — Progreso del experimento */}
+            {/* SECCIÓN 4 — Win rate por ronda de retiro */}
+            {(()=>{
+              const decLogs = Object.values(room?.logs||{}).filter(l=>l.accion==="retirarse");
+              const resMap  = {};
+              resLogs.forEach(l=>{ resMap[`${l.partida}_${l.pairKey}`] = l; });
+
+              const byRonda = {1:{folds:0,badFolds:0},2:{folds:0,badFolds:0},3:{folds:0,badFolds:0}};
+              decLogs.forEach(l=>{
+                const r = l.ronda||1;
+                if (!byRonda[r]) return;
+                byRonda[r].folds++;
+                const wp = l.win_prob??null;
+                if (wp!=null&&wp>0.5) byRonda[r].badFolds++;
+              });
+
+              return (
+                <Card accent="#3b82f6">
+                  <div style={{fontSize:11,color:"#555",fontWeight:700,marginBottom:12,letterSpacing:1}}>
+                    ¿CUÁNDO SE RETIRAN Y ES MAL MOMENTO?
+                  </div>
+                  <div style={{overflowX:"auto"}}>
+                    <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                      <thead>
+                        <tr style={{borderBottom:"1px solid #1e1e2e"}}>
+                          {["Ronda","Retiros","Win prob &gt;50% al retirarse","% retiros prematuros"].map(h=>(
+                            <th key={h} style={{padding:"5px 8px",textAlign:"left",color:"#444",
+                              fontWeight:700,fontSize:11,whiteSpace:"nowrap"}}
+                              dangerouslySetInnerHTML={{__html:h}}/>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {[1,2,3].map(r=>{
+                          const {folds,badFolds} = byRonda[r];
+                          const pct = folds>0 ? Math.round((badFolds/folds)*100) : null;
+                          return (
+                            <tr key={r} style={{borderBottom:"1px solid #0f0f1a"}}>
+                              <td style={{padding:"6px 8px",color:"#3b82f6",fontWeight:700}}>R{r}</td>
+                              <td style={{padding:"6px 8px",color:"#aaa",fontFamily:"monospace"}}>{folds}</td>
+                              <td style={{padding:"6px 8px",color:"#eab308",fontFamily:"monospace"}}>{badFolds}</td>
+                              <td style={{padding:"6px 8px",fontFamily:"monospace",
+                                color:pct==null?"#555":pct>50?"#ef4444":"#22c55e"}}>
+                                {pct!=null?`${pct}%`:"—"}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div style={{fontSize:10,color:"#444",marginTop:8}}>
+                    "Retiro prematuro" = el jugador tenía win prob &gt;50% al momento de retirarse según simulación Monte Carlo.
+                  </div>
+                </Card>
+              );
+            })()}
+
+            {/* SECCIÓN 5 — Progreso del experimento */}
             {(()=>{
               const K      = config?.K || 5;
               const totalP = config?.totalPartidas || 0;
-
-              // Contar completadas por condición (desde logs resultado)
               const doneByCond = {limpio:0, A_trampa:0, B_trampa:0, ambos_trampa:0};
               resLogs.forEach(l=>{
                 const est = l.estado_partida||"limpio";
                 if (doneByCond[est]!==undefined) doneByCond[est]++;
               });
-              // Cada log resultado es una perspectiva de un jugador, pero queremos
-              // contar partidas (pares únicos), no jugadores → dividir entre 2
-              // Sin embargo los resLogs tienen UN log por par (ganador), así que
-              // ya son 1 por partida. Verificamos si hay doble conteo:
-              // finalizarPartidaDB escribe UN solo log de resultado por par → correcto.
-
               const COND_ROWS = [
                 {key:"limpio",       label:"🎯 Limpio",      color:"#aaa"},
                 {key:"A_trampa",     label:"🃏 A trampa",    color:"#eab308"},
                 {key:"B_trampa",     label:"👁 B trampa",    color:"#3b82f6"},
                 {key:"ambos_trampa", label:"⚔️ Ambos trampa",color:"#a855f7"},
               ];
-
               const progPct = totalP>0 ? Math.min(100, Math.round((jugadas/totalP)*100)) : 0;
-
               return (
                 <Card accent="#22c55e">
                   <div style={{fontSize:11,color:"#555",fontWeight:700,marginBottom:12,letterSpacing:1}}>
                     PROGRESO DEL EXPERIMENTO
                   </div>
-
-                  {/* Barra general */}
-                  <div style={{display:"flex",justifyContent:"space-between",
-                    alignItems:"center",marginBottom:6}}>
-                    <span style={{fontSize:12,color:"#aaa"}}>
-                      {jugadas} de {totalP} partidas completadas
-                    </span>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                    <span style={{fontSize:12,color:"#aaa"}}>{jugadas} de {totalP} partidas completadas</span>
                     <span style={{fontSize:13,fontWeight:900,color:"#22c55e"}}>{progPct}%</span>
                   </div>
                   <div style={{background:"#1e1e2e",borderRadius:6,height:10,marginBottom:16}}>
                     <div style={{width:`${progPct}%`,background:"#22c55e",borderRadius:6,
                       height:"100%",transition:"width 0.5s"}}/>
                   </div>
-
-                  {/* Mini tabla por condición */}
                   <div style={{display:"flex",flexDirection:"column",gap:8}}>
                     {COND_ROWS.map(({key,label,color})=>{
                       const done   = doneByCond[key]||0;
-                      const plan   = K;
-                      const rowPct = plan>0 ? Math.min(100, Math.round((done/plan)*100)) : 0;
+                      const rowPct = K>0 ? Math.min(100,Math.round((done/K)*100)) : 0;
                       return (
                         <div key={key}>
                           <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
                             <span style={{fontSize:11,color,fontWeight:700,minWidth:100}}>{label}</span>
                             <span style={{fontSize:11,color:"#aaa",minWidth:32,textAlign:"right"}}>{done}</span>
                             <span style={{fontSize:11,color:"#444"}}>/</span>
-                            <span style={{fontSize:11,color:"#555",minWidth:20}}>{plan}</span>
+                            <span style={{fontSize:11,color:"#555",minWidth:20}}>{K}</span>
                             <div style={{flex:1,background:"#1e1e2e",borderRadius:4,height:7}}>
                               <div style={{width:`${rowPct}%`,background:color,borderRadius:4,
                                 height:"100%",transition:"width 0.5s",opacity:0.8}}/>
@@ -2152,51 +2233,140 @@ function GestorScreen({ roomCode }) {
       })()}
 
       {/* ── DATOS ── */}
-      {tab==="datos"&&(
-        <div>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
-            <span style={{color:"#555",fontSize:13}}>{logs.length} eventos</span>
-            <div style={{display:"flex",gap:6}}>
-              <Btn onClick={exportDecisionesCSV} variant="success" style={{fontSize:12,padding:"6px 12px"}}>⬇ Decisiones</Btn>
-              <Btn onClick={exportResultadosCSV} variant="success" style={{fontSize:12,padding:"6px 12px"}}>⬇ Resultados</Btn>
+      {tab==="datos"&&(()=>{
+        // Agrupar logs por partida+pairKey
+        const decLogs = logs.filter(l=>l.accion!=="resultado");
+        const resLogs = logs.filter(l=>l.accion==="resultado");
+
+        // Construir mapa pairKey → resultado log
+        const resMap = {};
+        resLogs.forEach(l=>{ resMap[`${l.partida}_${l.pairKey}`] = l; });
+
+        // Grupos únicos ordenados por partida DESC (más recientes primero)
+        const grupos = [];
+        const seen   = new Set();
+        [...decLogs].sort((a,b)=>b.partida-a.partida||a.pairKey?.localeCompare(b.pairKey||"")).forEach(l=>{
+          const gk = `${l.partida}_${l.pairKey}`;
+          if (!seen.has(gk)) { seen.add(gk); grupos.push({ partida:l.partida, pairKey:l.pairKey }); }
+        });
+
+        const ESTADO_COLOR = { limpio:"#aaa", A_trampa:"#eab308", B_trampa:"#3b82f6", ambos_trampa:"#a855f7" };
+        const ESTADO_LABEL = { limpio:"Limpio", A_trampa:"A trampa", B_trampa:"B trampa", ambos_trampa:"Ambos" };
+
+        const visibles = datosVerTodas ? grupos : grupos.slice(0, 5);
+
+        return (
+          <div>
+            {/* Header con exports y toggle */}
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,flexWrap:"wrap",gap:8}}>
+              <span style={{color:"#555",fontSize:13}}>{grupos.length} pares · {decLogs.length} decisiones</span>
+              <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                <Btn onClick={()=>setDatosVerTodas(v=>!v)} variant="dark" style={{fontSize:12,padding:"6px 12px"}}>
+                  {datosVerTodas?`Ver últimas 5`:`Ver todas (${grupos.length})`}
+                </Btn>
+                <Btn onClick={exportDecisionesCSV} variant="success" style={{fontSize:12,padding:"6px 12px"}}>⬇ Decisiones</Btn>
+                <Btn onClick={exportResultadosCSV} variant="success" style={{fontSize:12,padding:"6px 12px"}}>⬇ Resultados</Btn>
+              </div>
+            </div>
+
+            {!grupos.length&&(
+              <Card><div style={{color:"#444",padding:20,textAlign:"center"}}>Sin datos aún</div></Card>
+            )}
+
+            <div style={{display:"flex",flexDirection:"column",gap:12}}>
+              {visibles.map(({partida,pairKey})=>{
+                const pd      = partidas?.[partida]?.[pairKey] || {};
+                const [pA,pB] = pd.jugadores || [];
+                const plA     = players?.[pA] || {};
+                const plB     = players?.[pB] || {};
+                const estado  = pd.estadoPartida || "limpio";
+                const eColor  = ESTADO_COLOR[estado] || "#aaa";
+                const eLabel  = ESTADO_LABEL[estado]  || estado;
+
+                const gRows = decLogs
+                  .filter(l=>l.partida===partida&&l.pairKey===pairKey)
+                  .sort((a,b)=>(a.ronda-b.ronda)||(a.ts-b.ts));
+
+                const resLog  = resMap[`${partida}_${pairKey}`];
+                const ganUID  = resLog?.jugador || pd.ganador || "";
+                const gCasa   = ganUID==="casa";
+                const resColor= gCasa ? "#a855f7" : ganUID===pA||ganUID===pB ? "#22c55e" : "#555";
+                const resText = resLog?.resultado || pd.resultado || "";
+
+                return (
+                  <Card key={`${partida}_${pairKey}`} accent={eColor}>
+                    {/* Header */}
+                    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10,flexWrap:"wrap"}}>
+                      <span style={{fontWeight:900,color:"#f97316",fontSize:13}}>Partida {partida}</span>
+                      <span style={{color:"#555",fontSize:12}}>·</span>
+                      <span style={{fontSize:12,color:"#aaa"}}>
+                        <span style={{color:plA.color||"#aaa",fontWeight:700}}>{plA.nickname||pA}</span>
+                        <span style={{color:"#555"}}> vs </span>
+                        <span style={{color:plB.color||"#aaa",fontWeight:700}}>{plB.nickname||pB}</span>
+                      </span>
+                      <span style={{fontSize:11,padding:"2px 8px",borderRadius:12,
+                        background:`${eColor}22`,color:eColor,fontWeight:700,marginLeft:"auto"}}>
+                        {eLabel}
+                      </span>
+                    </div>
+
+                    {/* Tabla de decisiones */}
+                    <div style={{overflowX:"auto"}}>
+                      <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+                        <thead>
+                          <tr style={{borderBottom:"1px solid #1e1e2e"}}>
+                            {["Ronda","Jugador","Decisión","Dados","Públicos vis.","Score","Win%","T(ms)"].map(h=>(
+                              <th key={h} style={{padding:"4px 8px",textAlign:"left",color:"#444",fontWeight:700,whiteSpace:"nowrap"}}>{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {gRows.map((l,i)=>{
+                            const pl       = players?.[l.jugador] || {};
+                            const decColor = l.accion==="apostar" ? "#22c55e" : "#ef4444";
+                            const pubVis   = l.ronda>=2
+                              ? (l.ronda>=3 ? `${l.pub_visible_1??""} ${l.pub_visible_2??""}`.trim() : String(l.pub_visible_1??""))
+                              : "—";
+                            return (
+                              <tr key={i} style={{borderBottom:"1px solid #0f0f1a"}}>
+                                <td style={{padding:"4px 8px",color:"#555",fontFamily:"monospace"}}>R{l.ronda}</td>
+                                <td style={{padding:"4px 8px",color:pl.color||"#aaa",fontWeight:700,whiteSpace:"nowrap"}}>
+                                  {pl.nickname||l.nickname_jugador||l.jugador}
+                                  {pl.isBot&&<span style={{color:"#22c55e",fontSize:9,marginLeft:4}}>BOT</span>}
+                                </td>
+                                <td style={{padding:"4px 8px",color:decColor,fontWeight:700}}>{l.accion}</td>
+                                <td style={{padding:"4px 8px",color:"#f97316",fontFamily:"monospace"}}>
+                                  {l.dado_priv_1??""} {l.dado_priv_2??""}
+                                </td>
+                                <td style={{padding:"4px 8px",color:"#3b82f6",fontFamily:"monospace"}}>{pubVis}</td>
+                                <td style={{padding:"4px 8px",color:"#f97316",fontFamily:"monospace"}}>{l.score_parcial??""}</td>
+                                <td style={{padding:"4px 8px",color:"#a855f7",fontFamily:"monospace"}}>
+                                  {l.win_prob!=null ? `${Math.round(l.win_prob*100)}%` : ""}
+                                </td>
+                                <td style={{padding:"4px 8px",color:"#555",fontFamily:"monospace"}}>
+                                  {l.tiempo_decision_ms??l.tiempo_ms??""}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {/* Fila de resultado */}
+                    {resText&&(
+                      <div style={{marginTop:8,paddingTop:8,borderTop:"1px solid #1e1e2e",
+                        fontWeight:700,fontSize:12,color:resColor}}>
+                        {resText}
+                      </div>
+                    )}
+                  </Card>
+                );
+              })}
             </div>
           </div>
-          <Card>
-            <div style={{overflowX:"auto"}}>
-              <table style={{width:"100%",borderCollapse:"collapse",fontSize:11,fontFamily:"monospace"}}>
-                <thead>
-                  <tr>{["Part.","Jugador","Rival","Acción","Ronda","EV","T(ms)","Estado","Cond","ScA","ScB","Resultado"].map(h=>(
-                    <th key={h} style={{color:"#444",padding:"5px 6px",textAlign:"left",borderBottom:"1px solid #1e1e2e"}}>{h}</th>
-                  ))}</tr>
-                </thead>
-                <tbody>
-                  {logs.slice(-80).reverse().map((l,i)=>(
-                    <tr key={i} style={{borderBottom:"1px solid #141420"}}>
-                      <td style={{padding:"3px 6px",color:"#555"}}>{l.partida}</td>
-                      <td style={{padding:"3px 6px",color:players?.[l.jugador]?.color||"#aaa",fontWeight:700}}>
-                        {players?.[l.jugador]?.nickname||l.jugador}
-                      </td>
-                      <td style={{padding:"3px 6px",color:players?.[l.rival]?.color||"#555"}}>
-                        {players?.[l.rival]?.nickname||l.rival}
-                      </td>
-                      <td style={{padding:"3px 6px",color:l.accion==="apostar"?"#22c55e":"#ef4444"}}>{l.accion}</td>
-                      <td style={{padding:"3px 6px",color:"#aaa"}}>{l.ronda}</td>
-                      <td style={{padding:"3px 6px",color:"#a855f7"}}>{((l.ev||0)*100).toFixed(0)}%</td>
-                      <td style={{padding:"3px 6px",color:"#555"}}>{l.tiempo_ms}</td>
-                      <td style={{padding:"3px 6px",color:"#555",fontSize:10}}>{l.estado_partida||l.fase||"-"}</td>
-                      <td style={{padding:"3px 6px",color:l.condicion_jugador==="tramposo"?"#eab308":"#666",fontSize:10}}>{l.condicion_jugador||"-"}</td>
-                      <td style={{padding:"3px 6px",color:"#f97316"}}>{l.scoreA??""}</td>
-                      <td style={{padding:"3px 6px",color:"#3b82f6"}}>{l.scoreB??""}</td>
-                      <td style={{padding:"3px 6px",color:"#22c55e"}}>{l.resultado||""}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {!logs.length&&<div style={{color:"#444",padding:20,textAlign:"center"}}>Sin datos aún</div>}
-            </div>
-          </Card>
-        </div>
-      )}
+        );
+      })()}
 
       {/* ── CONFIG ── */}
       {tab==="config"&&cfgLocal&&(
@@ -2474,6 +2644,14 @@ function PlayerScreen({ roomCode, playerId, profile, onLeave }) {
       condicion_jugador:pd.condicion?.[playerId]||"limpio",
       suma_propia:myDice.reduce((a,b)=>a+b,0),
       suma_publica:pubVis.reduce((a,b)=>a+b,0),
+      dado_priv_1:myDice[0]||null, dado_priv_2:myDice[1]||null,
+      pub_1:pd.publicos?.[0]||null, pub_2:pd.publicos?.[1]||null,
+      pub_visible_1:ronda>=2?pd.publicos?.[0]||null:null,
+      pub_visible_2:ronda>=3?pd.publicos?.[1]||null:null,
+      pub_revelados:ronda-1,
+      score_parcial:top3score(myDice,pubVis).score,
+      win_prob:parseFloat(estimateWinProb(myDice,pubVis).toFixed(3)),
+      tiempo_decision_ms:tiempo,
       resultado:null,ts:Date.now(),
     });
 
