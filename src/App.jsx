@@ -385,6 +385,33 @@ function HomeScreen({ onGestor, onJoin }) {
   const [resumeCandidate, setResumeCandidate] = useState(null);
   const [resumeTarget,    setResumeTarget]    = useState(null);
 
+  const [recCode,    setRecCode]    = useState("");
+  const [recNick,    setRecNick]    = useState("");
+  const [recError,   setRecError]   = useState("");
+  const [recLoading, setRecLoading] = useState(false);
+
+  const handleRecover = async () => {
+    if (!recCode || !recNick) return;
+    setRecLoading(true);
+    setRecError("");
+    const snap = await get(ref(db,`rooms/${recCode}/players`));
+    if (snap.exists()) {
+      const players = snap.val();
+      const entry   = Object.entries(players).find(
+        ([,p]) => !p.isBot && p.nickname?.toLowerCase() === recNick.trim().toLowerCase()
+      );
+      if (entry) {
+        const [uid, profile] = entry;
+        sessionStorage.setItem(`tot_uid_${recCode}`, uid);
+        setRecLoading(false);
+        setResumeTarget({ code:recCode, uid, profile });
+        return;
+      }
+    }
+    setRecError("No se encontró ese nickname en la sala");
+    setRecLoading(false);
+  };
+
   useEffect(()=>{
     for (let i=0; i<sessionStorage.length; i++) {
       const key = sessionStorage.key(i);
@@ -459,6 +486,25 @@ function HomeScreen({ onGestor, onJoin }) {
               letterSpacing:6,outline:"none",textAlign:"center"}}/>
           <Btn onClick={()=>onJoin(code)} disabled={code.length<4}>Entrar</Btn>
         </div>
+      </Card>
+      <Card accent="#555" style={{marginTop:12}}>
+        <div style={{fontSize:13,color:"#aaa",fontWeight:700,marginBottom:4}}>¿Ya estás registrado en una sala?</div>
+        <p style={{color:"#555",margin:"0 0 12px",fontSize:12}}>
+          Ingresa el código de sala y tu nickname exacto para recuperar tu sesión
+        </p>
+        <input value={recCode} onChange={e=>setRecCode(e.target.value.toUpperCase())} placeholder="XXXXX" maxLength={5}
+          style={{width:"100%",background:"#0a0a0f",border:"1px solid #2a2a3a",borderRadius:10,
+            padding:"10px 14px",color:"#f97316",fontFamily:"monospace",fontSize:20,
+            letterSpacing:5,outline:"none",textAlign:"center",marginBottom:8,boxSizing:"border-box"}}/>
+        <input value={recNick} onChange={e=>setRecNick(e.target.value)} placeholder="Tu nickname" maxLength={16}
+          style={{width:"100%",background:"#0a0a0f",border:"1px solid #2a2a3a",borderRadius:10,
+            padding:"10px 14px",color:"#fff",fontFamily:"inherit",fontSize:14,
+            outline:"none",marginBottom:8,boxSizing:"border-box"}}/>
+        {recError&&<p style={{color:"#ef4444",fontSize:12,margin:"0 0 8px"}}>{recError}</p>}
+        <Btn onClick={handleRecover} disabled={recCode.length<4||!recNick.trim()||recLoading}
+          variant="dark" style={{width:"100%"}}>
+          {recLoading?"Buscando…":"Recuperar sesión"}
+        </Btn>
       </Card>
       <Card accent="#2a2a3a" style={{marginTop:12}}>
         <div style={{fontSize:13,color:"#f97316",fontWeight:700,marginBottom:10}}>📖 ¿Cómo se juega?</div>
@@ -1377,9 +1423,9 @@ function GestorScreen({ roomCode }) {
                   border:`1px solid ${p.color}44`,display:"flex",alignItems:"center",gap:8}}>
                   <span style={{fontSize:22}}>{p.avatar}</span>
                   <div>
-                    <div style={{color:p.color,fontWeight:700,fontSize:13}}>
-                      <span style={{color:p.online===true?"#22c55e":"#555",marginRight:4}}>●</span>
-                      {p.nickname}
+                    <div style={{color:p.color,fontWeight:700,fontSize:13}}>{p.nickname}</div>
+                    <div style={{color:p.online===true?"#22c55e":"#ef4444",fontSize:11}}>
+                      {p.online===true?"● En línea":"● Desconectado"}
                     </div>
                     <div style={{color:"#555",fontSize:11}}>💰 {balance?.[uid]??10}</div>
                   </div>
