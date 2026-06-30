@@ -1200,6 +1200,8 @@ function GestorScreen({ roomCode }) {
     await update(ref(db,`rooms/${roomCode}/status`),{phase:"lobby",partidaActual:0});
   };
 
+  const botRunningRef = useRef(new Set());
+
   const launchPartida = async (numPartida, players, schedule, matchStateSchedule, totalPartidas, r) => {
     const idx = numPartida-1;
     const done = new Set();
@@ -1238,15 +1240,19 @@ function GestorScreen({ roomCode }) {
   };
 
   const scheduleBotDecisions = async (n, pairKey, pd, r) => {
+    const runKey = `${n}_${pairKey}`;
+    if (botRunningRef.current.has(runKey)) return;
+    botRunningRef.current.add(runKey);
+
     const [pidA,pidB] = pd.jugadores||[];
     const isA = r?.players?.[pidA]?.isBot;
     const isB = r?.players?.[pidB]?.isBot;
-    if (!isA && !isB) return;
+    if (!isA && !isB) { botRunningRef.current.delete(runKey); return; }
 
     for (let ronda=1; ronda<=3; ronda++) {
       if (ronda>1) await waitForRonda(n, pairKey, ronda);
       const snap = await get(ref(db,`rooms/${roomCode}/partidas/${n}/${pairKey}`));
-      if (!snap.exists()||snap.val().resultado) return;
+      if (!snap.exists()||snap.val().resultado) { botRunningRef.current.delete(runKey); return; }
       const pdC = snap.val();
       const pub = (pdC.publicos||[]).slice(0,ronda-1);
 
@@ -1259,11 +1265,9 @@ function GestorScreen({ roomCode }) {
         await sleep(delay);
 
         const snap2 = await get(ref(db,`rooms/${roomCode}/partidas/${n}/${pairKey}`));
-        if (!snap2.exists()||snap2.val().resultado) return;
+        if (!snap2.exists()||snap2.val().resultado) { botRunningRef.current.delete(runKey); return; }
 
-        const decKey   = `${ronda}_${pid}`;
-        const checkSnap = await get(ref(db,`rooms/${roomCode}/partidas/${n}/${pairKey}/decisiones/${decKey}`));
-        if (checkSnap.exists()) return;
+        const decKey = `${ronda}_${pid}`;
         await update(ref(db,`rooms/${roomCode}/partidas/${n}/${pairKey}/decisiones`),{[decKey]:decision});
 
         const rival   = pid===pidA?pidB:pidA;
@@ -1292,7 +1296,7 @@ function GestorScreen({ roomCode }) {
         });
 
         const snap3   = await get(ref(db,`rooms/${roomCode}/partidas/${n}/${pairKey}`));
-        if (!snap3.exists()||snap3.val().resultado) return;
+        if (!snap3.exists()||snap3.val().resultado) { botRunningRef.current.delete(runKey); return; }
         const pd3     = snap3.val();
         const rivalDec= pd3.decisiones?.[`${ronda}_${rival}`];
         if (rivalDec) {
@@ -1300,10 +1304,11 @@ function GestorScreen({ roomCode }) {
           await resolveRondaDB(roomCode,rSnap.val(),n,pairKey,pd3,ronda,
             pidA, pd3.decisiones?.[`${ronda}_${pidA}`],
             pidB, pd3.decisiones?.[`${ronda}_${pidB}`]);
-          if (decision==="retirarse"||rivalDec==="retirarse") return;
+          if (decision==="retirarse"||rivalDec==="retirarse") { botRunningRef.current.delete(runKey); return; }
         }
       }
     }
+    botRunningRef.current.delete(runKey);
   };
 
   const waitForRonda = (n,pairKey,target) => new Promise(resolve=>{
@@ -1327,6 +1332,7 @@ function GestorScreen({ roomCode }) {
   };
 
   const resetSession = async ()=>{
+    botRunningRef.current.clear();
     const players = Object.keys(room?.players||{}).filter(k=>k!=="gestor");
     const bal={}; players.forEach(p=>{bal[p]=10;});
     await update(ref(db,`rooms/${roomCode}`),{
