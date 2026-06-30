@@ -90,11 +90,14 @@ function soundLose() {
  */
 function top3score(privados, publicosVisibles) {
   const pool = [...privados, ...publicosVisibles];
-  const sorted = [...pool].sort((a,b) => b-a); // descendente
+  const unos = pool.filter(v => v === 1);
+  if (unos.length >= 3) {
+    return { score: 3, best3: [1,1,1], tresumos: true };
+  }
+  const sorted = [...pool].sort((a,b) => b-a);
   const best3  = sorted.slice(0, 3);
   const score  = best3.reduce((a,b) => a+b, 0);
-  const tresumos = best3.filter(v => v===1).length >= 3;
-  return { score, best3, tresumos };
+  return { score, best3, tresumos: false };
 }
 
 function calcEV(privados, publicosVisibles) {
