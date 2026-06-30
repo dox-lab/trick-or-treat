@@ -20,7 +20,7 @@ const db  = getDatabase(app);
 const AVATARS = ["🦇","🐺","🕷️","🦉","🐈‍⬛","💀","🐸","🦊","🐙","🐝"];
 const COLORS  = ["#f97316","#22c55e","#a855f7","#3b82f6","#ef4444","#eab308","#06b6d4","#ec4899","#14b8a6","#f59e0b"];
 const NICKNAMES = ["StatsWitch","DataGhost","BayesBat","ProbWolf","SigmaSpider","MeanOwl","VarCat","ModeFrog","ChiFox","HypoKraken","TestBee","NormZombie","PoissonPumpkin","RegressWitch","SampleCrow","ErrorDemon"];
-const BOT_NAMES = ["Lucía","Mateo","Valeria","Sebastián","Camila","Diego","Renata","Andrés","Daniela","Tomás","Sofía","Nicolás","Mariana","Emilio","Paula","Santiago"];
+const BOT_NAMES = ["Piero","Mange","Angelo","Merely","Dox","Mateo"];
 
 function pickBotIdentity(index) {
   const name   = BOT_NAMES[index % BOT_NAMES.length];
@@ -146,18 +146,36 @@ function estimateProbs(myPrivate, publicVisible, knownRivalDice=[], samples=500)
   };
 }
 
-function botDecision(strategy, privados, publicosVisibles) {
+function botDecision(strategy, privados, publicosVisibles, ronda=1) {
+  const pool = [...privados, ...publicosVisibles];
+  const unos = pool.filter(v=>v===1).length;
+  if (unos >= 3) return "apostar";
+
+  if (ronda === 1) {
+    switch(strategy) {
+      case "always_bet":   return "apostar";
+      case "always_fold":  return "retirarse";
+      case "random":       return Math.random() > 0.3 ? "apostar" : "retirarse";
+      case "ev_threshold": return "apostar";
+      case "aggressive":   return "apostar";
+      case "conservative": {
+        const maxPriv = Math.max(...privados);
+        return maxPriv <= 2 ? "retirarse" : "apostar";
+      }
+      default: return "apostar";
+    }
+  }
+
+  const wp  = estimateWinProb(privados, publicosVisibles);
+  const adj = ronda === 2 ? 0.08 : 0;
+
   switch(strategy) {
     case "always_bet":   return "apostar";
     case "always_fold":  return "retirarse";
     case "random":       return Math.random() > 0.5 ? "apostar" : "retirarse";
-    default: break;
-  }
-  const wp = estimateWinProb(privados, publicosVisibles);
-  switch(strategy) {
-    case "ev_threshold": return wp >= 0.45 ? "apostar" : "retirarse";
-    case "aggressive":   return wp >= 0.30 ? "apostar" : "retirarse";
-    case "conservative": return wp >= 0.58 ? "apostar" : "retirarse";
+    case "ev_threshold": return (wp + adj) >= 0.40 ? "apostar" : "retirarse";
+    case "aggressive":   return (wp + adj) >= 0.25 ? "apostar" : "retirarse";
+    case "conservative": return wp >= 0.55 ? "apostar" : "retirarse";
     default:             return "apostar";
   }
 }
@@ -1094,7 +1112,7 @@ function GestorScreen({ roomCode }) {
           const strategy = room.players[pid].strategy||"ev_threshold";
           const myDice   = pd.dados?.[pid]||[];
           const pub      = (pd.publicos||[]).slice(0,ronda-1);
-          const decision = botDecision(strategy, myDice, pub);
+          const decision = botDecision(strategy, myDice, pub, ronda);
           const delay    = 800+Math.random()*1400;
           await sleep(delay);
           const snap = await get(ref(db,`rooms/${roomCode}/partidas/${n}/${pairKey}`));
@@ -1222,7 +1240,7 @@ function GestorScreen({ roomCode }) {
         if (!isBot) continue;
         const strategy = r?.players?.[pid]?.strategy||"ev_threshold";
         const myDice   = pdC.dados?.[pid]||[];
-        const decision = botDecision(strategy, myDice, pub);
+        const decision = botDecision(strategy, myDice, pub, ronda);
         const delay    = 800+Math.random()*1400;
         await sleep(delay);
 
