@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { initializeApp } from "firebase/app";
-import { getDatabase, ref, set, get, onValue, off, update, push } from "firebase/database";
+import { getDatabase, ref, set, get, onValue, off, update, push, onDisconnect } from "firebase/database";
 
 // ─── FIREBASE CONFIG ─────────────────────────────────────────────────────────
 const firebaseConfig = {
@@ -382,9 +382,65 @@ function TimerCircle({ seconds, total }) {
 // ─── HOME ─────────────────────────────────────────────────────────────────────
 function HomeScreen({ onGestor, onJoin }) {
   const [code, setCode] = useState("");
+  const [resumeCandidate, setResumeCandidate] = useState(null);
+  const [resumeTarget,    setResumeTarget]    = useState(null);
+
+  useEffect(()=>{
+    for (let i=0; i<sessionStorage.length; i++) {
+      const key = sessionStorage.key(i);
+      if (key && key.startsWith("tot_uid_")) {
+        const rc  = key.slice("tot_uid_".length);
+        const uid = sessionStorage.getItem(key);
+        if (uid) { setResumeCandidate({ code:rc, uid }); break; }
+      }
+    }
+  },[]);
+
+  const handleContinue = async () => {
+    const { code:rc, uid } = resumeCandidate;
+    const snap = await get(ref(db,`rooms/${rc}/players/${uid}`));
+    if (snap.exists()) {
+      setResumeTarget({ code:rc, uid, profile:snap.val() });
+    } else {
+      sessionStorage.removeItem(`tot_uid_${rc}`);
+      setResumeCandidate(null);
+    }
+  };
+
+  const handleIgnore = () => {
+    sessionStorage.removeItem(`tot_uid_${resumeCandidate.code}`);
+    setResumeCandidate(null);
+  };
+
+  if (resumeTarget) {
+    return <PlayerScreen
+      roomCode={resumeTarget.code}
+      playerId={resumeTarget.uid}
+      profile={resumeTarget.profile}
+      onLeave={()=>setResumeTarget(null)}
+    />;
+  }
+
   return (
     <div style={{maxWidth:420,margin:"0 auto",padding:"48px 20px"}}>
       <GlobalCSS/>
+      {resumeCandidate&&(
+        <div style={{background:"#1a1a2a",border:"1px solid #f9731655",borderRadius:12,
+          padding:"12px 16px",marginBottom:16,display:"flex",alignItems:"center",
+          gap:10,flexWrap:"wrap"}}>
+          <span style={{color:"#f97316",fontSize:13,flex:1}}>
+            ¿Continuar partida anterior? Sala: <b>{resumeCandidate.code}</b>
+          </span>
+          <button onClick={handleContinue} style={{background:"#f97316",color:"#000",border:"none",
+            borderRadius:8,padding:"6px 14px",fontWeight:700,cursor:"pointer",fontSize:13}}>
+            ▶ Continuar
+          </button>
+          <button onClick={handleIgnore} style={{background:"none",color:"#555",border:"1px solid #2a2a3a",
+            borderRadius:8,padding:"6px 10px",fontWeight:700,cursor:"pointer",fontSize:13}}>
+            ✕ Ignorar
+          </button>
+        </div>
+      )}
       <div style={{textAlign:"center",marginBottom:40}}>
         <div style={{fontSize:72,display:"inline-block",animation:"float 3s ease-in-out infinite"}}>🎃</div>
         <h1 style={{fontSize:34,fontWeight:900,color:"#f97316",margin:"8px 0 0",letterSpacing:-1}}>TRICK OR TREAT</h1>
@@ -1321,7 +1377,10 @@ function GestorScreen({ roomCode }) {
                   border:`1px solid ${p.color}44`,display:"flex",alignItems:"center",gap:8}}>
                   <span style={{fontSize:22}}>{p.avatar}</span>
                   <div>
-                    <div style={{color:p.color,fontWeight:700,fontSize:13}}>{p.nickname}</div>
+                    <div style={{color:p.color,fontWeight:700,fontSize:13}}>
+                      <span style={{color:p.online===true?"#22c55e":"#555",marginRight:4}}>●</span>
+                      {p.nickname}
+                    </div>
                     <div style={{color:"#555",fontSize:11}}>💰 {balance?.[uid]??10}</div>
                   </div>
                   {phase==="lobby"&&(
@@ -2090,7 +2149,10 @@ function PlayerScreen({ roomCode, playerId, profile, onLeave }) {
       if (stillIn) wasInRoomRef.current = true;
       setRoom(d);
     });
-    return ()=>off(r);
+    const presRef = ref(db, `rooms/${roomCode}/players/${playerId}/online`);
+    set(presRef, true);
+    onDisconnect(presRef).set(false);
+    return ()=>{ off(r); set(presRef, false); };
   },[roomCode,playerId]);
 
   const getMyPair  = useCallback((r,n)=>Object.values(r?.partidas?.[n]||{}).find(p=>(p.jugadores||[]).includes(playerId))||null,[playerId]);
@@ -2767,12 +2829,30 @@ function PlayerHeader({ profile, balance, roomCode, partida, total, menuOpen, on
 
 // ─── JOIN FLOW ────────────────────────────────────────────────────────────────
 function JoinFlow({ roomCode, onBack }) {
-  const [step,    setStep]    = useState("role");
-  const [role,    setRole]    = useState(null);
-  const [pw,      setPw]      = useState("");
-  const [pwErr,   setPwErr]   = useState("");
-  const [uid,     setUid]     = useState(null);
-  const [profile, setProfile] = useState(null);
+  const [step,           setStep]           = useState("role");
+  const [role,           setRole]           = useState(null);
+  const [pw,             setPw]             = useState("");
+  const [pwErr,          setPwErr]          = useState("");
+  const [uid,            setUid]            = useState(null);
+  const [profile,        setProfile]        = useState(null);
+  const [checkingResume, setCheckingResume] = useState(false);
+
+  useEffect(()=>{
+    if (step!=="profile_jugador") return;
+    const storedUid = sessionStorage.getItem(`tot_uid_${roomCode}`);
+    if (!storedUid) return;
+    setCheckingResume(true);
+    get(ref(db,`rooms/${roomCode}/players/${storedUid}`)).then(snap=>{
+      if (snap.exists()) {
+        setUid(storedUid);
+        setProfile(snap.val());
+        setStep("play");
+      } else {
+        sessionStorage.removeItem(`tot_uid_${roomCode}`);
+        setCheckingResume(false);
+      }
+    });
+  },[step, roomCode]);
 
   const checkPw = async () => {
     const snap = await get(ref(db,`rooms/${roomCode}/password`));
@@ -2824,10 +2904,17 @@ function JoinFlow({ roomCode, onBack }) {
     </div>
   );
 
-  if (step==="profile_jugador") return (
-    <ProfileScreen roomCode={roomCode}
-      onJoined={(newUid,prof)=>{ setUid(newUid); setProfile(prof); setStep("play"); }}/>
-  );
+  if (step==="profile_jugador") {
+    if (checkingResume) return (
+      <div style={{maxWidth:420,margin:"0 auto",padding:"40px 20px",textAlign:"center",color:"#555",fontSize:14}}>
+        Verificando sesión…
+      </div>
+    );
+    return (
+      <ProfileScreen roomCode={roomCode}
+        onJoined={(newUid,prof)=>{ setUid(newUid); setProfile(prof); setStep("play"); }}/>
+    );
+  }
 
   if (step==="profile_gestor") return (
     <GestorProfileScreen roomCode={roomCode}
