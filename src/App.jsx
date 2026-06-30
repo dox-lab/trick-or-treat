@@ -390,6 +390,11 @@ function HomeScreen({ onGestor, onJoin }) {
   const [recError,   setRecError]   = useState("");
   const [recLoading, setRecLoading] = useState(false);
 
+  const [openRooms,   setOpenRooms]   = useState([]);
+  const [adminPw,     setAdminPw]     = useState("");
+  const [adminOk,     setAdminOk]     = useState(false);
+  const [adminErr,    setAdminErr]    = useState("");
+
   const handleRecover = async () => {
     if (!recCode || !recNick) return;
     setRecLoading(true);
@@ -421,7 +426,38 @@ function HomeScreen({ onGestor, onJoin }) {
         if (uid) { setResumeCandidate({ code:rc, uid }); break; }
       }
     }
+    get(ref(db,"rooms")).then(snap=>{
+      if (!snap.exists()) return;
+      const all = snap.val();
+      const active = Object.entries(all)
+        .filter(([,r])=> r.config?.open===true || r.status?.phase==="playing")
+        .map(([code,r])=>({
+          code,
+          phase: r.status?.phase||"lobby",
+          password: r.password||"",
+          players: Object.values(r.players||{}).filter(p=>!p.isBot&&p.uid!=="gestor"),
+          connected: Object.values(r.players||{}).filter(p=>!p.isBot&&p.uid!=="gestor"&&p.online===true).length,
+        }));
+      setOpenRooms(active);
+    });
   },[]);
+
+  const verifyAdmin = () => {
+    const match = openRooms.find(r=>r.password===adminPw);
+    if (match) { setAdminOk(true); setAdminErr(""); }
+    else        { setAdminErr("Contraseña incorrecta"); }
+  };
+
+  const closeRoom = async (code) => {
+    await set(ref(db,`rooms/${code}`), null);
+    setOpenRooms(prev=>prev.filter(r=>r.code!==code));
+  };
+
+  const closeAllRooms = async () => {
+    await Promise.all(openRooms.map(r=>set(ref(db,`rooms/${r.code}`), null)));
+    setOpenRooms([]);
+    setAdminOk(false);
+  };
 
   const handleContinue = async () => {
     const { code:rc, uid } = resumeCandidate;
@@ -487,6 +523,52 @@ function HomeScreen({ onGestor, onJoin }) {
           <Btn onClick={()=>onJoin(code)} disabled={code.length<4}>Entrar</Btn>
         </div>
       </Card>
+      {openRooms.length>0&&(
+        <Card accent="#ef4444" style={{marginTop:12}}>
+          <div style={{fontSize:13,color:"#ef4444",fontWeight:700,marginBottom:8}}>
+            ⚠️ Salas activas anteriores ({openRooms.length})
+          </div>
+          {!adminOk ? (
+            <div>
+              <p style={{color:"#555",fontSize:12,margin:"0 0 8px"}}>
+                Ingresa la contraseña de una de las salas para gestionarlas
+              </p>
+              <div style={{display:"flex",gap:8}}>
+                <input type="password" value={adminPw} onChange={e=>setAdminPw(e.target.value)}
+                  onKeyDown={e=>e.key==="Enter"&&verifyAdmin()}
+                  placeholder="Contraseña del gestor"
+                  style={{flex:1,background:"#0a0a0f",border:"1px solid #2a2a3a",borderRadius:10,
+                    padding:"9px 12px",color:"#fff",fontFamily:"inherit",fontSize:13,outline:"none"}}/>
+                <Btn onClick={verifyAdmin} variant="danger">Verificar</Btn>
+              </div>
+              {adminErr&&<p style={{color:"#ef4444",fontSize:12,margin:"8px 0 0"}}>{adminErr}</p>}
+            </div>
+          ) : (
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {openRooms.map(r=>(
+                <div key={r.code} style={{display:"flex",alignItems:"center",gap:8,
+                  background:"#1a1a2a",borderRadius:10,padding:"8px 12px",flexWrap:"wrap"}}>
+                  <span style={{fontFamily:"monospace",fontWeight:900,color:"#ef4444",fontSize:14,flex:"0 0 auto"}}>
+                    {r.code}
+                  </span>
+                  <span style={{fontSize:11,color:"#555",flex:1}}>
+                    {r.phase==="playing"?"⚡ jugando":r.phase==="finished"?"✓ terminada":"⏳ lobby"}
+                    {" · "}{r.players.length} jugadores · {r.connected} en línea
+                  </span>
+                  <button onClick={()=>closeRoom(r.code)} style={{background:"#ef444422",
+                    border:"1px solid #ef444455",borderRadius:8,padding:"5px 10px",
+                    color:"#ef4444",fontWeight:700,fontSize:12,cursor:"pointer"}}>
+                    🗑 Cerrar
+                  </button>
+                </div>
+              ))}
+              <Btn onClick={closeAllRooms} variant="danger" style={{marginTop:4}}>
+                🗑 Cerrar todas
+              </Btn>
+            </div>
+          )}
+        </Card>
+      )}
       <Card accent="#555" style={{marginTop:12}}>
         <div style={{fontSize:13,color:"#aaa",fontWeight:700,marginBottom:4}}>¿Ya estás registrado en una sala?</div>
         <p style={{color:"#555",margin:"0 0 12px",fontSize:12}}>
@@ -2153,6 +2235,31 @@ function GestorScreen({ roomCode }) {
               {roomCode}
             </div>
           </Card>
+
+          <div style={{border:"1px solid #ef444433",borderRadius:12,padding:16,marginTop:16}}>
+            <div style={{fontSize:13,color:"#ef4444",fontWeight:700,marginBottom:12}}>⚠️ Zona peligrosa</div>
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              <Btn variant="danger" onClick={async ()=>{
+                if (!window.confirm("¿Eliminar sala y todos sus datos?")) return;
+                await set(ref(db,`rooms/${roomCode}`), null);
+                window.location.reload();
+              }}>
+                🗑 Eliminar sala completa
+              </Btn>
+              <Btn variant="danger" onClick={async ()=>{
+                if (!window.confirm("¿Borrar logs y partidas? Los jugadores y config se mantienen")) return;
+                await update(ref(db,`rooms/${roomCode}`),{
+                  logs:null, partidas:null, pairs:null,
+                  matchStateSchedule:null, faseSchedule:null,
+                  balance:null,
+                  "status/phase":"lobby",
+                  "status/partidaActual":0,
+                });
+              }}>
+                🧹 Limpiar solo logs y partidas
+              </Btn>
+            </div>
+          </div>
         </div>
       )}
     </div>
