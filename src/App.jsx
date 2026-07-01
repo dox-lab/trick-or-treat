@@ -17,10 +17,19 @@ const app = initializeApp(firebaseConfig);
 const db  = getDatabase(app);
 
 // ─── CONSTANTES ──────────────────────────────────────────────────────────────
-const AVATARS = ["🦇","🐺","🕷️","🦉","🐈‍⬛","💀","🐸","🦊","🐙","🐝"];
+const AVATARS = ["🦇","🐺","🕷️","🦉","🐈‍⬛","💀","🐸","🦊","🐙","🐝","🐀","🐕","🦋"];
 const COLORS  = ["#f97316","#22c55e","#a855f7","#3b82f6","#ef4444","#eab308","#06b6d4","#ec4899","#14b8a6","#f59e0b"];
 const NICKNAMES = ["StatsWitch","DataGhost","BayesBat","ProbWolf","SigmaSpider","MeanOwl","VarCat","ModeFrog","ChiFox","HypoKraken","TestBee","NormZombie","PoissonPumpkin","RegressWitch","SampleCrow","ErrorDemon"];
 const BOT_NAMES = ["Piero","Mange","Angelo","Merely","Dox","Mateo"];
+
+const PREDEFINED_PROFILES = [
+  { nickname:"Dox-itocina", avatar:"🐀", color:"#eab308" },
+  { nickname:"Mateta",      avatar:"💀", color:"#3b82f6" },
+  { nickname:"Andropa",     avatar:"🐕", color:"#f97316" },
+  { nickname:"Man",         avatar:"🐝", color:"#ec4899" },
+  { nickname:"Pipo",        avatar:"🐸", color:"#22c55e" },
+  { nickname:"Mere",        avatar:"🦋", color:"#ef4444" },
+];
 
 function pickBotIdentity(index) {
   const name   = BOT_NAMES[index % BOT_NAMES.length];
@@ -837,11 +846,19 @@ function BotConfig({ botCount, setBotCount, botStrategies, setBotStrategies }) {
 
 // ─── PERFIL JUGADOR ───────────────────────────────────────────────────────────
 function ProfileScreen({ roomCode, onJoined }) {
-  const [nickname, setNickname] = useState(()=>NICKNAMES[Math.floor(Math.random()*NICKNAMES.length)]);
-  const [avatar,   setAvatar]   = useState(()=>AVATARS[Math.floor(Math.random()*AVATARS.length)]);
-  const [color,    setColor]    = useState(()=>COLORS[Math.floor(Math.random()*COLORS.length)]);
+  const [nickname, setNickname] = useState("");
+  const [avatar,   setAvatar]   = useState("");
+  const [color,    setColor]    = useState("");
+  const [selected, setSelected] = useState(null);
   const [error,    setError]    = useState("");
   const [loading,  setLoading]  = useState(false);
+
+  const pickProfile = (p) => {
+    setSelected(p.nickname);
+    setNickname(p.nickname);
+    setAvatar(p.avatar);
+    setColor(p.color);
+  };
 
   const join = async () => {
     if (!nickname.trim()) return;
@@ -864,6 +881,21 @@ function ProfileScreen({ roomCode, onJoined }) {
         <div style={{fontSize:11,color:"#555",fontFamily:"monospace"}}>SALA</div>
         <div style={{fontSize:26,fontWeight:900,color:"#f97316",fontFamily:"monospace",letterSpacing:4}}>{roomCode}</div>
       </div>
+      <Card style={{marginBottom:16}}>
+        <label style={{color:"#777",fontSize:13,display:"block",marginBottom:8}}>Elige un perfil</label>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10}}>
+          {PREDEFINED_PROFILES.map(p=>(
+            <button key={p.nickname} onClick={()=>pickProfile(p)} style={{
+              display:"flex",flexDirection:"column",alignItems:"center",gap:4,
+              background:selected===p.nickname?"#1e1e2e":"transparent",
+              border:`${selected===p.nickname?3:2}px solid ${p.color}`,
+              borderRadius:12,padding:"10px 4px",cursor:"pointer"}}>
+              <span style={{fontSize:32}}>{p.avatar}</span>
+              <span style={{color:p.color,fontWeight:700,fontSize:12}}>{p.nickname}</span>
+            </button>
+          ))}
+        </div>
+      </Card>
       <Card>
         <div style={{textAlign:"center",marginBottom:20}}>
           <div style={{fontSize:80,filter:`drop-shadow(0 0 18px ${color})`,lineHeight:1}}>{avatar}</div>
@@ -2489,6 +2521,11 @@ function PlayerScreen({ roomCode, playerId, profile, onLeave }) {
   const decidirRef      = useRef(null);
   const graceRef        = useRef(null);
   const wasInRoomRef    = useRef(false);
+  const rivalMaskRef    = useRef({
+    nickname: NICKNAMES[Math.floor(Math.random()*NICKNAMES.length)],
+    avatar:   AVATARS[Math.floor(Math.random()*AVATARS.length)],
+    color:    COLORS[Math.floor(Math.random()*COLORS.length)],
+  });
 
   const leaveGame = async () => {
     await update(ref(db,`rooms/${roomCode}/players/${playerId}`),{ isBot:true, strategy:"ev_threshold" });
@@ -2931,7 +2968,7 @@ function PlayerScreen({ roomCode, playerId, profile, onLeave }) {
             )}
             {config?.showRivalEV&&(
               <EVBar value={canCheat&&probs.rivalCheat!==null?probs.rivalCheat:probs.rival}
-                label="Prob. victoria rival" color={rivalInfo?.color||"#ef4444"}/>
+                label="Prob. victoria rival" color={rivalMaskRef.current.color||"#ef4444"}/>
             )}
           </div>
         )}
@@ -2963,8 +3000,8 @@ function PlayerScreen({ roomCode, playerId, profile, onLeave }) {
         </div>
         <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
           {rivalInfo&&<>
-            <span style={{fontSize:24}}>{rivalInfo.avatar}</span>
-            <span style={{color:rivalInfo.color,fontWeight:700}}>{rivalInfo.nickname}</span>
+            <span style={{fontSize:24}}>{rivalMaskRef.current.avatar}</span>
+            <span style={{color:rivalMaskRef.current.color,fontWeight:700}}>{rivalMaskRef.current.nickname}</span>
           </>}
           {rivDecidio&&!yaDecidio&&<Badge color="#22c55e">✓ Ya decidió</Badge>}
         </div>
