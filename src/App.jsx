@@ -20,7 +20,7 @@ const db  = getDatabase(app);
 const AVATARS = ["🦇","🐺","🕷️","🦉","🐈‍⬛","💀","🐸","🦊","🐙","🐝","🐀","🐕","🦋"];
 const COLORS  = ["#f97316","#22c55e","#a855f7","#3b82f6","#ef4444","#eab308","#06b6d4","#ec4899","#14b8a6","#f59e0b"];
 const NICKNAMES = ["StatsWitch","DataGhost","BayesBat","ProbWolf","SigmaSpider","MeanOwl","VarCat","ModeFrog","ChiFox","HypoKraken","TestBee","NormZombie","PoissonPumpkin","RegressWitch","SampleCrow","ErrorDemon"];
-const BOT_NAMES = ["Piero","Mange","Angelo","Merely","Dox","Mateo"];
+const BOT_NAMES = ["Piero","Angelo","Mange","Merely","Dox","Mateo"];
 
 const PREDEFINED_PROFILES = [
   { nickname:"Dox-itocina", avatar:"🐀", color:"#eab308" },
@@ -29,6 +29,29 @@ const PREDEFINED_PROFILES = [
   { nickname:"Man",         avatar:"🐝", color:"#ec4899" },
   { nickname:"Pipo",        avatar:"🐸", color:"#22c55e" },
   { nickname:"Mere",        avatar:"🦋", color:"#ef4444" },
+];
+
+const MASK_POOL = [
+  { nickname:"Miracle-",     avatar:"🐺", color:"#a855f7" },
+  { nickname:"Topson",       avatar:"🦇", color:"#f97316" },
+  { nickname:"Puppey",       avatar:"🦉", color:"#eab308" },
+  { nickname:"KuroKy",       avatar:"🕷️", color:"#ef4444" },
+  { nickname:"Ana",          avatar:"🐈‍⬛", color:"#06b6d4" },
+  { nickname:"Notail",       avatar:"🦊", color:"#f59e0b" },
+  { nickname:"Ceb",          avatar:"🐙", color:"#ec4899" },
+  { nickname:"Mindcontrol",  avatar:"💀", color:"#3b82f6" },
+  { nickname:"Ramzes666",    avatar:"🐝", color:"#22c55e" },
+  { nickname:"Resolut1on",   avatar:"🐸", color:"#14b8a6" },
+  { nickname:"SumaiL",       avatar:"🐀", color:"#eab308" },
+  { nickname:"Gh",           avatar:"🐕", color:"#f97316" },
+  { nickname:"Crystallis",   avatar:"🦋", color:"#ef4444" },
+  { nickname:"Yatoro",       avatar:"🦇", color:"#a855f7" },
+  { nickname:"Collapse",     avatar:"🐺", color:"#3b82f6" },
+  { nickname:"Larl",         avatar:"🦉", color:"#22c55e" },
+  { nickname:"Pure",         avatar:"🕷️", color:"#f97316" },
+  { nickname:"Torontotokyo", avatar:"🐈‍⬛", color:"#eab308" },
+  { nickname:"Zayac",        avatar:"🦊", color:"#ec4899" },
+  { nickname:"Miposhka",     avatar:"🐙", color:"#ef4444" },
 ];
 
 function pickBotIdentity(index) {
@@ -2521,11 +2544,8 @@ function PlayerScreen({ roomCode, playerId, profile, onLeave }) {
   const decidirRef      = useRef(null);
   const graceRef        = useRef(null);
   const wasInRoomRef    = useRef(false);
-  const rivalMaskRef    = useRef({
-    nickname: NICKNAMES[Math.floor(Math.random()*NICKNAMES.length)],
-    avatar:   AVATARS[Math.floor(Math.random()*AVATARS.length)],
-    color:    COLORS[Math.floor(Math.random()*COLORS.length)],
-  });
+  const rivalMaskRef    = useRef(null);
+  const lastRivalRef    = useRef(null);
 
   const leaveGame = async () => {
     await update(ref(db,`rooms/${roomCode}/players/${playerId}`),{ isBot:true, strategy:"ev_threshold" });
@@ -2773,6 +2793,12 @@ function PlayerScreen({ roomCode, playerId, profile, onLeave }) {
 
   const rival     = (myPair.jugadores||[]).find(j=>j!==playerId);
   const rivalInfo = players?.[rival];
+  if (rival && rival !== lastRivalRef.current) {
+    lastRivalRef.current = rival;
+    const idx = Math.floor(Math.random() * MASK_POOL.length);
+    rivalMaskRef.current = MASK_POOL[idx];
+  }
+  const rivalMask = rivalMaskRef.current || MASK_POOL[0];
   const myDice    = myPair.dados?.[playerId]||[];
   const ronda     = myPair.ronda||1;
   const pubAll    = myPair.publicos||[];
@@ -2968,7 +2994,7 @@ function PlayerScreen({ roomCode, playerId, profile, onLeave }) {
             )}
             {config?.showRivalEV&&(
               <EVBar value={canCheat&&probs.rivalCheat!==null?probs.rivalCheat:probs.rival}
-                label="Prob. victoria rival" color={rivalMaskRef.current.color||"#ef4444"}/>
+                label="Prob. victoria rival" color={rivalMask.color||"#ef4444"}/>
             )}
           </div>
         )}
@@ -3000,8 +3026,8 @@ function PlayerScreen({ roomCode, playerId, profile, onLeave }) {
         </div>
         <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
           {rivalInfo&&<>
-            <span style={{fontSize:24}}>{rivalMaskRef.current.avatar}</span>
-            <span style={{color:rivalMaskRef.current.color,fontWeight:700}}>{rivalMaskRef.current.nickname}</span>
+            <span style={{fontSize:24}}>{rivalMask.avatar}</span>
+            <span style={{color:rivalMask.color,fontWeight:700}}>{rivalMask.nickname}</span>
           </>}
           {rivDecidio&&!yaDecidio&&<Badge color="#22c55e">✓ Ya decidió</Badge>}
         </div>
