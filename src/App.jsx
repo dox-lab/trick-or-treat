@@ -1377,10 +1377,153 @@ function ROLE_ROWS_render(rows, p, td, pct1, wrColor, MIN_N) {
   });
 }
 
+// ─── EXPORT CSV (nivel de módulo, reutilizable por gestor, jugador y visualizador) ───
+function _downloadCSV(filename, cols, rows) {
+  if (!rows.length) return;
+  const esc = v => {
+    const s = String(v ?? "");
+    return s.includes(",") || s.includes('"') || s.includes("\n")
+      ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  const bom  = "\uFEFF";
+  const blob = new Blob(
+    [bom + cols.join(",") + "\n" + rows.map(r => r.map(esc).join(",")).join("\n")],
+    { type:"text/csv;charset=utf-8" }
+  );
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+}
+
+function exportDecisionesCSVData(room, roomCode) {
+  const pl      = room?.players || {};
+  const rawLogs = Object.values(room?.logs || {}).filter(l => l.accion !== "resultado");
+
+  rawLogs.sort((a,b) =>
+    (a.partida - b.partida) ||
+    (a.ronda   - b.ronda)   ||
+    (a.pairKey || "").localeCompare(b.pairKey || "") ||
+    (a.nickname_jugador || "").localeCompare(b.nickname_jugador || "")
+  );
+
+  const cols = [
+    "partida","ronda","par","jugador_nombre","rival_nombre","es_bot",
+    "estado_partida","condicion_jugador",
+    "dado_priv_1","dado_priv_2","pub_1","pub_2",
+    "pub_visible_1","pub_visible_2","pub_revelados",
+    "score_parcial","win_prob","win_prob_cheat","ev",
+    "decision","tiempo_decision_ms",
+  ];
+
+  const rows = rawLogs.map(l => {
+    const ronda  = l.ronda || 1;
+    const pInfo  = pl[l.jugador] || {};
+    const pv1    = l.pub_visible_1 != null ? l.pub_visible_1 : (ronda >= 2 ? l.pub_1 ?? "" : "");
+    const pv2    = l.pub_visible_2 != null ? l.pub_visible_2 : (ronda >= 3 ? l.pub_2 ?? "" : "");
+    return [
+      l.partida, ronda, l.pairKey || "",
+      l.nickname_jugador || pInfo.nickname || l.jugador || "",
+      l.nickname_rival   || "",
+      pInfo.isBot ? "TRUE" : "FALSE",
+      l.estado_partida    || "",
+      l.condicion_jugador || "",
+      l.dado_priv_1 ?? "", l.dado_priv_2 ?? "",
+      l.pub_1 ?? "",       l.pub_2 ?? "",
+      pv1,                 pv2,
+      l.pub_revelados ?? ronda - 1,
+      l.score_parcial ?? "",
+      l.win_prob      ?? "",
+      l.win_prob_cheat ?? "",
+      ((l.ev || 0) * 100).toFixed(1),
+      l.accion,
+      l.tiempo_decision_ms ?? l.tiempo_ms ?? "",
+    ];
+  });
+
+  _downloadCSV(`tot_${roomCode}_decisiones.csv`, cols, rows);
+}
+
+function exportResultadosCSVData(room, roomCode) {
+  const pl  = room?.players || {};
+  const pts = room?.partidas || {};
+
+  const resLogsAll = Object.values(room?.logs || {}).filter(l => l.accion === "resultado");
+  const resLogMap  = {};
+  resLogsAll.forEach(l=>{ resLogMap[`${l.partida}_${l.pairKey}`] = l; });
+  const resLogs = Object.values(resLogMap)
+    .sort((a,b) => (a.partida - b.partida) || (a.pairKey || "").localeCompare(b.pairKey || ""));
+
+  const cols = [
+    "partida","par","estado_partida",
+    "ganador_nombre","ganador_es_bot","condicion_ganador",
+    "perdedor_nombre","perdedor_es_bot","condicion_perdedor",
+    "dado_priv_ganador_1","dado_priv_ganador_2",
+    "dado_priv_perdedor_1","dado_priv_perdedor_2",
+    "pub_1","pub_2",
+    "best3_ganador","score_ganador",
+    "best3_perdedor","score_perdedor",
+    "pot_final","gano_casa","motivo",
+  ];
+
+  const rows = resLogs.map(l => {
+    const pd        = pts[l.partida]?.[l.pairKey] || {};
+    const [pA, pB]  = pd.jugadores || [];
+    const ganUID    = l.jugador || l.ganador || "";
+    const gCasa     = ganUID === "casa";
+    const perUID    = gCasa ? "" : (ganUID === pA ? pB : pA) || "";
+
+    const ganNick   = gCasa ? "Casa"   : (pl[ganUID]?.nickname || ganUID || "");
+    const perNick   = gCasa ? "Empate/Retiro" : (pl[perUID]?.nickname || perUID || "");
+    const ganBot    = gCasa ? "" : (pl[ganUID]?.isBot ? "TRUE" : "FALSE");
+    const perBot    = gCasa ? "" : (pl[perUID]?.isBot ? "TRUE" : "FALSE");
+    const condGan   = gCasa ? "" : (pd.condicion?.[ganUID] || "");
+    const condPer   = gCasa ? "" : (pd.condicion?.[perUID] || "");
+
+    const isGanA    = ganUID === pA;
+    const scoreGan  = gCasa ? "" : ((isGanA ? pd.scoreA : pd.scoreB) ?? "");
+    const scorePer  = gCasa ? "" : ((isGanA ? pd.scoreB : pd.scoreA) ?? "");
+    const best3Gan  = gCasa ? "" : ((isGanA ? pd.best3A : pd.best3B) || []).join("+");
+    const best3Per  = gCasa ? "" : ((isGanA ? pd.best3B : pd.best3A) || []).join("+");
+
+    const dGan      = pd.dados?.[ganUID] || [];
+    const dPer      = pd.dados?.[perUID] || [];
+    const pub       = pd.publicos || [];
+
+    const res       = l.resultado || pd.resultado || "";
+    const resL      = res.toLowerCase();
+    const motivo    = resL.includes("tres unos") ? "tres_unos"
+      : res.includes("Mayor suma")                 ? "mayor_suma"
+      : resL.includes("retirar") || resL.includes("retirada") ? "retiro"
+      : resL.includes("empate")                    ? "empate"
+      : resL.includes("casa")                      ? "casa"
+      : "";
+
+    return [
+      l.partida     ?? "",
+      l.pairKey     || "",
+      l.estado_partida || pd.estadoPartida || "",
+      ganNick, ganBot, condGan,
+      perNick, perBot, condPer,
+      dGan[0] ?? "", dGan[1] ?? "",
+      dPer[0] ?? "", dPer[1] ?? "",
+      pub[0]  ?? "", pub[1]  ?? "",
+      best3Gan, scoreGan,
+      best3Per, scorePer,
+      pd.pot  ?? 2,
+      gCasa ? "TRUE" : "FALSE",
+      motivo,
+    ];
+  });
+
+  _downloadCSV(`tot_${roomCode}_resultados.csv`, cols, rows);
+}
+
 // ─── GESTOR SCREEN ────────────────────────────────────────────────────────────
-function GestorScreen({ roomCode }) {
+function GestorScreen({ roomCode, mode="gestor" }) {
+  const isViewer = mode==="viewer";
   const [room,       setRoom]      = useState(null);
-  const [tab,        setTab]       = useState("control");
+  const [tab,        setTab]       = useState(isViewer ? "partidas" : "control");
   const [cfgLocal,   setCfgLocal]  = useState(null);
   const [botCountL,  setBotCountL]  = useState(0);
   const [botStratsL,    setBotStratsL]    = useState([]);
@@ -1400,6 +1543,7 @@ function GestorScreen({ roomCode }) {
 
   // Auto-avance cuando todos los pares terminan
   useEffect(()=>{
+    if (isViewer) return;   // el visualizador nunca avanza el motor
     if (!room) return;
     const { status, partidas, config } = room;
     if (status?.phase!=="playing") return;
@@ -1424,6 +1568,7 @@ function GestorScreen({ roomCode }) {
   // Detectar bots con decisiones pendientes (cubre jugadores convertidos a bot mid-partida)
   const botHandledRef = useRef(new Set());
   useEffect(()=>{
+    if (isViewer) return;   // el visualizador no resuelve decisiones de bots
     if (!room||room.status?.phase!=="playing") return;
     const n = room.status?.partidaActual||0;
     const pData = room.partidas?.[n];
@@ -1499,6 +1644,7 @@ function GestorScreen({ roomCode }) {
   // Resolver rondas donde ambos jugadores ya decidieron pero nadie resolvió
   const resolveWatchRef = useRef(new Set());
   useEffect(()=>{
+    if (isViewer) return;   // el visualizador no resuelve rondas
     if (!room||room.status?.phase!=="playing") return;
     const n = room.status?.partidaActual||0;
     const pData = room.partidas?.[n];
@@ -1704,148 +1850,9 @@ function GestorScreen({ roomCode }) {
 
   const saveConfig = ()=>update(ref(db,`rooms/${roomCode}/config`),cfgLocal);
 
-  const _downloadCSV = (filename, cols, rows) => {
-    if (!rows.length) return;
-    const esc = v => {
-      const s = String(v ?? "");
-      return s.includes(",") || s.includes('"') || s.includes("\n")
-        ? '"' + s.replace(/"/g, '""') + '"' : s;
-    };
-    const bom  = "﻿";
-    const blob = new Blob(
-      [bom + cols.join(",") + "\n" + rows.map(r => r.map(esc).join(",")).join("\n")],
-      { type:"text/csv;charset=utf-8" }
-    );
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = filename;
-    a.click();
-  };
+  const exportDecisionesCSV = () => exportDecisionesCSVData(room, roomCode);
 
-  const exportDecisionesCSV = () => {
-    const pl      = room?.players || {};
-    const rawLogs = Object.values(room?.logs || {}).filter(l => l.accion !== "resultado");
-
-    rawLogs.sort((a,b) =>
-      (a.partida - b.partida) ||
-      (a.ronda   - b.ronda)   ||
-      (a.pairKey || "").localeCompare(b.pairKey || "") ||
-      (a.nickname_jugador || "").localeCompare(b.nickname_jugador || "")
-    );
-
-    const cols = [
-      "partida","ronda","par","jugador_nombre","rival_nombre","es_bot",
-      "estado_partida","condicion_jugador",
-      "dado_priv_1","dado_priv_2","pub_1","pub_2",
-      "pub_visible_1","pub_visible_2","pub_revelados",
-      "score_parcial","win_prob","win_prob_cheat","ev",
-      "decision","tiempo_decision_ms",
-    ];
-
-    const rows = rawLogs.map(l => {
-      const ronda  = l.ronda || 1;
-      const pInfo  = pl[l.jugador] || {};
-      const pv1    = l.pub_visible_1 != null ? l.pub_visible_1 : (ronda >= 2 ? l.pub_1 ?? "" : "");
-      const pv2    = l.pub_visible_2 != null ? l.pub_visible_2 : (ronda >= 3 ? l.pub_2 ?? "" : "");
-      return [
-        l.partida,
-        ronda,
-        l.pairKey || "",
-        l.nickname_jugador || pInfo.nickname || l.jugador || "",
-        l.nickname_rival   || "",
-        pInfo.isBot ? "TRUE" : "FALSE",
-        l.estado_partida    || "",
-        l.condicion_jugador || "",
-        l.dado_priv_1 ?? "", l.dado_priv_2 ?? "",
-        l.pub_1 ?? "",       l.pub_2 ?? "",
-        pv1,                 pv2,
-        l.pub_revelados ?? ronda - 1,
-        l.score_parcial ?? "",
-        l.win_prob      ?? "",
-        l.win_prob_cheat ?? "",
-        ((l.ev || 0) * 100).toFixed(1),
-        l.accion,
-        l.tiempo_decision_ms ?? l.tiempo_ms ?? "",
-      ];
-    });
-
-    _downloadCSV(`tot_${roomCode}_decisiones.csv`, cols, rows);
-  };
-
-  const exportResultadosCSV = () => {
-    const pl  = room?.players || {};
-    const pts = room?.partidas || {};
-
-    const resLogsAll = Object.values(room?.logs || {}).filter(l => l.accion === "resultado");
-    const resLogMap  = {};
-    resLogsAll.forEach(l=>{ resLogMap[`${l.partida}_${l.pairKey}`] = l; });
-    const resLogs = Object.values(resLogMap)
-      .sort((a,b) => (a.partida - b.partida) || (a.pairKey || "").localeCompare(b.pairKey || ""));
-
-    const cols = [
-      "partida","par","estado_partida",
-      "ganador_nombre","ganador_es_bot","condicion_ganador",
-      "perdedor_nombre","perdedor_es_bot","condicion_perdedor",
-      "dado_priv_ganador_1","dado_priv_ganador_2",
-      "dado_priv_perdedor_1","dado_priv_perdedor_2",
-      "pub_1","pub_2",
-      "best3_ganador","score_ganador",
-      "best3_perdedor","score_perdedor",
-      "pot_final","gano_casa","motivo",
-    ];
-
-    const rows = resLogs.map(l => {
-      const pd        = pts[l.partida]?.[l.pairKey] || {};
-      const [pA, pB]  = pd.jugadores || [];
-      const ganUID    = l.jugador || l.ganador || "";
-      const gCasa     = ganUID === "casa";
-      const perUID    = gCasa ? "" : (ganUID === pA ? pB : pA) || "";
-
-      const ganNick   = gCasa ? "Casa"   : (pl[ganUID]?.nickname || ganUID || "");
-      const perNick   = gCasa ? "Empate/Retiro" : (pl[perUID]?.nickname || perUID || "");
-      const ganBot    = gCasa ? "" : (pl[ganUID]?.isBot ? "TRUE" : "FALSE");
-      const perBot    = gCasa ? "" : (pl[perUID]?.isBot ? "TRUE" : "FALSE");
-      const condGan   = gCasa ? "" : (pd.condicion?.[ganUID] || "");
-      const condPer   = gCasa ? "" : (pd.condicion?.[perUID] || "");
-
-      const isGanA    = ganUID === pA;
-      const scoreGan  = gCasa ? "" : ((isGanA ? pd.scoreA : pd.scoreB) ?? "");
-      const scorePer  = gCasa ? "" : ((isGanA ? pd.scoreB : pd.scoreA) ?? "");
-      const best3Gan  = gCasa ? "" : ((isGanA ? pd.best3A : pd.best3B) || []).join("+");
-      const best3Per  = gCasa ? "" : ((isGanA ? pd.best3B : pd.best3A) || []).join("+");
-
-      const dGan      = pd.dados?.[ganUID] || [];
-      const dPer      = pd.dados?.[perUID] || [];
-      const pub       = pd.publicos || [];
-
-      const res       = l.resultado || pd.resultado || "";
-      const resL      = res.toLowerCase();
-      const motivo    = resL.includes("tres unos") ? "tres_unos"
-        : res.includes("Mayor suma")                 ? "mayor_suma"
-        : resL.includes("retirar") || resL.includes("retirada") ? "retiro"
-        : resL.includes("empate")                    ? "empate"
-        : resL.includes("casa")                      ? "casa"
-        : "";
-
-      return [
-        l.partida     ?? "",
-        l.pairKey     || "",
-        l.estado_partida || pd.estadoPartida || "",
-        ganNick, ganBot, condGan,
-        perNick, perBot, condPer,
-        dGan[0] ?? "", dGan[1] ?? "",
-        dPer[0] ?? "", dPer[1] ?? "",
-        pub[0]  ?? "", pub[1]  ?? "",
-        best3Gan, scoreGan,
-        best3Per, scorePer,
-        pd.pot  ?? 2,
-        gCasa ? "TRUE" : "FALSE",
-        motivo,
-      ];
-    });
-
-    _downloadCSV(`tot_${roomCode}_resultados.csv`, cols, rows);
-  };
+  const exportResultadosCSV = () => exportResultadosCSVData(room, roomCode);
 
   if (!room) return <div style={{color:"#666",padding:40,textAlign:"center"}}>Cargando sala…</div>;
 
@@ -1857,8 +1864,11 @@ function GestorScreen({ roomCode }) {
   const phase       = status?.phase||"lobby";
   const pActual     = status?.partidaActual||0;
   const pData       = partidas?.[pActual]||{};
-  const TABS = [{id:"control",label:"🎮 Control"},{id:"partidas",label:"🎲 Partidas"},
+  const ALL_TABS = [{id:"control",label:"🎮 Control"},{id:"partidas",label:"🎲 Partidas"},
                 {id:"stats",label:"📈 Stats"},{id:"datos",label:"📊 Datos"},{id:"config",label:"⚙️ Config"}];
+  // El visualizador solo ve Partidas, Stats y Datos (lectura); sin Control ni Config.
+  const TABS = isViewer ? ALL_TABS.filter(t=>["partidas","stats","datos"].includes(t.id)) : ALL_TABS;
+  const accentColor = isViewer ? "#3b82f6" : "#a855f7";
 
   return (
     <div style={{maxWidth:740,margin:"0 auto",padding:"20px 16px"}}>
@@ -1866,10 +1876,11 @@ function GestorScreen({ roomCode }) {
       {/* Header */}
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
         <div>
-          <div style={{fontSize:11,color:"#555",fontFamily:"monospace"}}>GESTOR · SALA</div>
-          <div style={{fontSize:24,fontWeight:900,color:"#a855f7",fontFamily:"monospace",letterSpacing:3}}>{roomCode}</div>
+          <div style={{fontSize:11,color:"#555",fontFamily:"monospace"}}>{isViewer?"VISUALIZADOR · SALA":"GESTOR · SALA"}</div>
+          <div style={{fontSize:24,fontWeight:900,color:accentColor,fontFamily:"monospace",letterSpacing:3}}>{roomCode}</div>
         </div>
         <div style={{display:"flex",gap:6,flexWrap:"wrap",justifyContent:"flex-end"}}>
+          {isViewer&&<Badge color="#3b82f6">👁 SOLO LECTURA</Badge>}
           <Badge color={config?.open?"#22c55e":"#ef4444"}>{config?.open?"● ABIERTA":"● CERRADA"}</Badge>
           <Badge color={phase==="playing"?"#f97316":phase==="finished"?"#22c55e":"#666"}>
             {phase==="lobby"?"LOBBY":phase==="playing"?`PARTIDA ${pActual}/${config?.totalPartidas}`:"FIN"}
@@ -1881,7 +1892,7 @@ function GestorScreen({ roomCode }) {
       <div style={{display:"flex",gap:4,marginBottom:16,background:"#1a1a2a",borderRadius:12,padding:4}}>
         {TABS.map(t=>(
           <button key={t.id} onClick={()=>setTab(t.id)} style={{flex:1,padding:"8px 4px",
-            background:tab===t.id?"#a855f7":"transparent",border:"none",borderRadius:8,
+            background:tab===t.id?accentColor:"transparent",border:"none",borderRadius:8,
             color:tab===t.id?"#fff":"#555",fontWeight:700,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>
             {t.label}
           </button>
@@ -3489,6 +3500,24 @@ function PlayerScreen({ roomCode, playerId, profile, onLeave }) {
         <div style={{color:"#555",fontSize:13,marginTop:2}}>Sala {roomCode}</div>
         <div style={{fontSize:24,fontWeight:900,color:"#f97316",marginTop:12}}>💰 {myBal}</div>
       </Card>
+      {phase==="finished"&&(
+        <Card accent="#22c55e" style={{marginTop:16}}>
+          <div style={{fontSize:11,color:"#555",fontWeight:700,letterSpacing:1,marginBottom:10}}>
+            DESCARGAR DATOS DEL EXPERIMENTO
+          </div>
+          <div style={{fontSize:12,color:"#777",marginBottom:12,lineHeight:1.5}}>
+            El experimento terminó. Puedes descargar los datos completos para tu propio análisis.
+          </div>
+          <div style={{display:"flex",flexDirection:"column",gap:8}}>
+            <Btn onClick={()=>exportDecisionesCSVData(room, roomCode)} variant="success" style={{width:"100%"}}>
+              ⬇ Decisiones CSV
+            </Btn>
+            <Btn onClick={()=>exportResultadosCSVData(room, roomCode)} variant="success" style={{width:"100%"}}>
+              ⬇ Resultados CSV
+            </Btn>
+          </div>
+        </Card>
+      )}
     </div>
   );
 
@@ -4008,9 +4037,11 @@ function JoinFlow({ roomCode, onBack }) {
       <div style={{display:"flex",flexDirection:"column",gap:10}}>
         {[
           {r:"jugador",label:"Jugador",color:"#f97316",emoji:"🎲",desc:"Participante del experimento"},
+          {r:"visualizador",label:"Visualizador",color:"#3b82f6",emoji:"👁",desc:"Observa partidas, stats y datos (solo lectura)"},
           {r:"gestor", label:"Gestor / Investigador",color:"#a855f7",emoji:"🔬",desc:"Control de la sala"},
         ].map(({r,label,color,emoji,desc})=>(
-          <button key={r} onClick={()=>{ setRole(r); setStep(r==="gestor"?"pw":"profile_jugador"); }}
+          <button key={r} onClick={()=>{ setRole(r);
+            setStep(r==="gestor"?"pw":r==="visualizador"?"play":"profile_jugador"); }}
             style={{background:"#12121e",border:`1px solid ${color}33`,borderRadius:12,
               padding:"16px 20px",display:"flex",alignItems:"center",gap:14,cursor:"pointer"}}>
             <span style={{fontSize:32}}>{emoji}</span>
@@ -4059,6 +4090,7 @@ function JoinFlow({ roomCode, onBack }) {
 
   if (step==="play") {
     if (role==="gestor") return <GestorScreen roomCode={roomCode}/>;
+    if (role==="visualizador") return <GestorScreen roomCode={roomCode} mode="viewer"/>;
     return <PlayerScreen roomCode={roomCode} playerId={uid} profile={profile} onLeave={onBack}/>;
   }
 }
