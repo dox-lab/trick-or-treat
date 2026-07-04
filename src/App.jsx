@@ -1027,10 +1027,42 @@ function ProfileScreen({ roomCode, onJoined }) {
     setLoading(true);
     const snap = await get(ref(db,`rooms/${roomCode}`));
     if (!snap.exists()) { setError("Sala no encontrada"); setLoading(false); return; }
-    if (!snap.val().config?.open) { setError("La sala aún no está abierta."); setLoading(false); return; }
+    const r = snap.val();
+    const phase = r.status?.phase || "lobby";
+    const isDynamic = !!r.config?.dynamicScheduler;
+    const inProgress = phase === "playing";
+
+    // Reglas de admisión:
+    // - lobby: se requiere sala abierta (comportamiento original).
+    // - playing + dynamicScheduler: se permite entrar en caliente (Fase 3),
+    //   respetando el límite de jugadores adicionales.
+    // - playing sin dynamicScheduler, o finished: no se permite entrar.
+    if (phase === "finished") { setError("El experimento ya terminó."); setLoading(false); return; }
+    if (!inProgress && !r.config?.open) { setError("La sala aún no está abierta."); setLoading(false); return; }
+    if (inProgress && !isDynamic) {
+      setError("El experimento ya empezó y no admite nuevos jugadores."); setLoading(false); return;
+    }
+    if (inProgress && isDynamic) {
+      // límite: jugadores humanos que se pueden añadir sobre el nº inicial
+      const humanos = Object.values(r.players||{}).filter(p=>!p.isBot && p.uid!=="gestor").length;
+      const base    = r.config?.numJugadores || humanos;
+      const yaAñadidos = Math.max(0, humanos - base);
+      if (yaAñadidos >= MAX_JUGADORES_ADICIONALES) {
+        setError(`Cupo lleno: ya se unieron ${MAX_JUGADORES_ADICIONALES} jugadores adicionales.`);
+        setLoading(false); return;
+      }
+    }
+
     const uid = genUID();
-    const profile = { uid, nickname:nickname.trim(), avatar, color, isBot:false, joinedAt:Date.now() };
-    await set(ref(db,`rooms/${roomCode}/players/${uid}`), profile);
+    const profile = { uid, nickname:nickname.trim(), avatar, color, isBot:false, joinedAt:Date.now(),
+      lateJoin: inProgress };
+    const updates = { [`players/${uid}`]: profile };
+    if (inProgress) {
+      // balance inicial estándar; marca para que el gestor lo incorpore al scheduler
+      updates[`balance/${uid}`] = 10;
+      updates[`pendingJoins/${uid}`] = { uid, ts: Date.now() };
+    }
+    await update(ref(db,`rooms/${roomCode}`), updates);
     sessionStorage.setItem(`tot_uid_${roomCode}`, uid);
     setLoading(false);
     onJoined(uid, profile);
@@ -1686,12 +1718,30 @@ function GestorScreen({ roomCode, mode="gestor" }) {
       const next = (r.status?.partidaActual||1)+1;
 
       if (r.config?.dynamicScheduler) {
-        // ── MOTOR DINÁMICO ── el scheduler decide si quedan partidas
-        const sched = r.scheduler;
-        if (!sched || schedTotalPending(sched) <= 0) {
+        // ── MOTOR DINÁMICO ──
+        let sched = r.scheduler;
+        if (!sched) { await update(ref(db,`rooms/${roomCode}/status`),{phase:"finished"}); return; }
+
+        // Incorporar jugadores que se unieron en caliente (entre batches).
+        // Se hace ANTES de armar el siguiente batch, respetando el emparejamiento.
+        const pending = r.pendingJoins || {};
+        const nuevos = Object.keys(pending).filter(uid => !sched.players.includes(uid) && r.players?.[uid]);
+        if (nuevos.length) {
+          nuevos.forEach(uid => { schedAddPlayer(sched, uid, pending[uid]?.ts || Date.now()); });
+          const { total } = schedTotalGames(sched);
+          const clearJoins = {};
+          nuevos.forEach(uid => { clearJoins[`pendingJoins/${uid}`] = null; });
+          await update(ref(db,`rooms/${roomCode}`), {
+            scheduler: sched,
+            "config/totalPartidas": total,
+            ...clearJoins,
+          });
+        }
+
+        if (schedTotalPending(sched) <= 0) {
           await update(ref(db,`rooms/${roomCode}/status`),{phase:"finished"});
         } else {
-          await launchBatchDynamic(next, sched, r);
+          await launchBatchDynamic(next, sched, {...r, scheduler:sched});
         }
         return;
       }
@@ -1706,6 +1756,46 @@ function GestorScreen({ roomCode, mode="gestor" }) {
     }, 3000);
     return ()=>clearTimeout(timer);
   },[room?.partidas, room?.status?.partidaActual]);
+
+  // Reactivación: si un jugador entra en caliente cuando el experimento ya
+  // terminó (o quedó sin batch activo), incorpora al scheduler y relanza.
+  const reactivateRef = useRef(false);
+  useEffect(()=>{
+    if (isViewer) return;
+    if (!room || !room.config?.dynamicScheduler) return;
+    const pending = room.pendingJoins || {};
+    const nuevos = Object.keys(pending).filter(uid => room.players?.[uid]);
+    if (!nuevos.length) return;
+    const phase = room.status?.phase;
+    // Solo reactivamos si NO hay un batch en curso que vaya a disparar el
+    // auto-avance por sí solo (es decir, si está finished o sin partidas vivas).
+    const n = room.status?.partidaActual||0;
+    const pairs = Object.values(room.partidas?.[n]||{});
+    const batchVivo = phase==="playing" && pairs.length && !pairs.every(p=>p.resultado);
+    if (batchVivo) return;            // el auto-avance ya se encargará
+    if (reactivateRef.current) return;
+    reactivateRef.current = true;
+    (async ()=>{
+      const snap = await get(ref(db,`rooms/${roomCode}`));
+      const r = snap.val();
+      let sched = r.scheduler;
+      if (!sched) { reactivateRef.current=false; return; }
+      const pj = r.pendingJoins || {};
+      const toAdd = Object.keys(pj).filter(uid => !sched.players.includes(uid) && r.players?.[uid]);
+      toAdd.forEach(uid => schedAddPlayer(sched, uid, pj[uid]?.ts || Date.now()));
+      const { total } = schedTotalGames(sched);
+      const clearJoins = {};
+      Object.keys(pj).forEach(uid => { clearJoins[`pendingJoins/${uid}`] = null; });
+      const nextTurno = (r.status?.partidaActual||0)+1;
+      await update(ref(db,`rooms/${roomCode}`), {
+        scheduler: sched, "config/totalPartidas": total, ...clearJoins,
+      });
+      if (schedTotalPending(sched) > 0) {
+        await launchBatchDynamic(nextTurno, sched, {...r, scheduler:sched});
+      }
+      reactivateRef.current = false;
+    })();
+  },[room?.pendingJoins, room?.status?.phase]);
 
   // Detectar bots con decisiones pendientes (cubre jugadores convertidos a bot mid-partida)
   const botHandledRef = useRef(new Set());
@@ -2392,6 +2482,56 @@ function GestorScreen({ roomCode, mode="gestor" }) {
                 </div>
               </div>
             )}
+
+            {/* ── Jugadores esperando emparejamiento (solo modo dinámico) ── */}
+            {phase==="playing" && config?.dynamicScheduler && (()=>{
+              const sched = room?.scheduler;
+              const pendingJoins = room?.pendingJoins || {};
+              const enJuego = new Set();
+              Object.values(pData||{}).forEach(d=>(d.jugadores||[]).forEach(j=>enJuego.add(j)));
+              // jugadores humanos en scheduler pero sin partida este turno
+              const esperando = (sched?.players||[]).filter(uid=>{
+                if (enJuego.has(uid)) return false;
+                if (players?.[uid]?.isBot) return false;
+                // tiene pendientes?
+                let pend=0;
+                Object.values(sched.pairs||{}).forEach(pr=>{ if(pr.pA===uid||pr.pB===uid) pend+=pr.pending.length; });
+                return pend>0;
+              });
+              const recienLlegados = Object.keys(pendingJoins).filter(uid=>players?.[uid]&&!players[uid].isBot);
+              if (!esperando.length && !recienLlegados.length) return null;
+              return (
+                <Card accent="#3b82f6" style={{marginBottom:12}}>
+                  <div style={{fontSize:11,color:"#3b82f6",fontWeight:700,letterSpacing:1,marginBottom:8}}>
+                    ⏳ ESPERANDO EMPAREJAMIENTO
+                  </div>
+                  <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                    {recienLlegados.map(uid=>{
+                      const p=players[uid];
+                      return (
+                        <div key={uid} style={{display:"flex",alignItems:"center",gap:6,background:"#12121e",
+                          borderRadius:8,padding:"5px 10px",border:"1px solid #3b82f644"}}>
+                          <span style={{fontSize:14}}>{p.avatar}</span>
+                          <span style={{fontSize:12,color:p.color,fontWeight:700}}>{p.nickname}</span>
+                          <span style={{fontSize:10,color:"#3b82f6"}}>uniéndose…</span>
+                        </div>
+                      );
+                    })}
+                    {esperando.filter(uid=>!recienLlegados.includes(uid)).map(uid=>{
+                      const p=players[uid]||{};
+                      return (
+                        <div key={uid} style={{display:"flex",alignItems:"center",gap:6,background:"#12121e",
+                          borderRadius:8,padding:"5px 10px",border:"1px solid #1e1e2e"}}>
+                          <span style={{fontSize:14}}>{p.avatar}</span>
+                          <span style={{fontSize:12,color:p.color||"#aaa"}}>{p.nickname||uid}</span>
+                          <span style={{fontSize:10,color:"#555"}}>próximo turno</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </Card>
+              );
+            })()}
 
             {/* ── SECCIÓN 2: HISTORIAL ── */}
             <div>
@@ -3746,13 +3886,68 @@ function PlayerScreen({ roomCode, playerId, profile, onLeave }) {
     </div>
   );
 
-  if (!myPair) return (
-    <div style={{maxWidth:420,margin:"0 auto",padding:"60px 20px",textAlign:"center"}}>
-      <GlobalCSS/>
-      <div style={{fontSize:48,display:"inline-block",animation:"pulse 1.5s infinite"}}>⏳</div>
-      <p style={{color:"#555",marginTop:16}}>Esperando emparejamiento…</p>
-    </div>
-  );
+  if (!myPair) {
+    // Info de espera enriquecida (Fase 3): si hay scheduler dinámico, estimamos
+    // cuántas partidas le faltan al jugador y una espera aproximada.
+    const sched = room.scheduler;
+    const isDynamic = !!config?.dynamicScheduler;
+    const enScheduler = sched?.players?.includes?.(playerId);
+    const esperandoIncorporacion = isDynamic && !enScheduler; // recién llegado, aún no incorporado
+    let misPendientes = 0, totalPend = 0, jugadoresActivos = 0;
+    if (sched?.pairs) {
+      Object.values(sched.pairs).forEach(pr=>{
+        totalPend += pr.pending.length;
+        if (pr.pA===playerId || pr.pB===playerId) misPendientes += pr.pending.length;
+      });
+      jugadoresActivos = sched.players?.length || 0;
+    }
+    // Estimación: cada "turno" (batch) resuelve ~3 rondas. Con ~pocos segundos por
+    // ronda, un turno dura ~10-20s. El jugador juega casi todos los turnos (la
+    // heurística prioriza su déficit), así que su espera típica es de 1 turno.
+    const segPorTurno = 15;
+    const esperaEstimadaSeg = esperandoIncorporacion
+      ? segPorTurno                                   // entra en el próximo emparejamiento
+      : Math.min(segPorTurno * 2, segPorTurno);       // hueco ocasional: ~1 turno
+
+    return (
+      <div style={{maxWidth:420,margin:"0 auto",padding:"48px 20px",textAlign:"center"}}>
+        <GlobalCSS/>
+        <div style={{display:"flex",justifyContent:"flex-end"}}>
+          <PlayerMenu onLeave={leaveGame} players={players} balance={balance} playerId={playerId} roomCode={roomCode}/>
+        </div>
+        <div style={{fontSize:48,display:"inline-block",animation:"pulse 1.5s infinite"}}>⏳</div>
+        <h2 style={{color:"#3b82f6",marginTop:12,fontSize:20}}>
+          {esperandoIncorporacion ? "Uniéndote al experimento…" : "Esperando emparejamiento…"}
+        </h2>
+        <Card accent="#3b82f6" style={{marginTop:16,textAlign:"left"}}>
+          {esperandoIncorporacion ? (
+            <div style={{fontSize:13,color:"#aaa",lineHeight:1.7}}>
+              Entraste con el experimento en curso. En el próximo emparejamiento
+              se generan tus partidas contra todos los jugadores y empiezas a jugar.
+              <div style={{marginTop:10,fontSize:12,color:"#777"}}>
+                Tiempo estimado de espera: <b style={{color:"#3b82f6"}}>~{esperaEstimadaSeg}s</b> (1 emparejamiento).
+              </div>
+            </div>
+          ) : (
+            <div style={{fontSize:13,color:"#aaa",lineHeight:1.7}}>
+              Estás entre partidas. El emparejador te asignará un rival en el próximo turno.
+              {misPendientes>0 && (
+                <div style={{marginTop:10,fontSize:12,color:"#777"}}>
+                  Te quedan <b style={{color:"#f97316"}}>{misPendientes}</b> partidas por jugar ·
+                  espera estimada <b style={{color:"#3b82f6"}}>~{esperaEstimadaSeg}s</b>.
+                </div>
+              )}
+            </div>
+          )}
+          {jugadoresActivos>0 && (
+            <div style={{marginTop:12,fontSize:11,color:"#555",borderTop:"1px solid #1e1e2e",paddingTop:10}}>
+              {jugadoresActivos} jugadores en la sala · {totalPend} partidas pendientes en total
+            </div>
+          )}
+        </Card>
+      </div>
+    );
+  }
 
   const rival     = (myPair.jugadores||[]).find(j=>j!==playerId);
   const rivalInfo = players?.[rival];
