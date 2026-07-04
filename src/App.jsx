@@ -1161,6 +1161,222 @@ function binomTestTwoSided(k, n, p0 = 0.5) {
   return Math.min(1, Math.max(0, 2 * (1 - normalCDF(Math.max(0, z)))));
 }
 
+// Test de DOS proporciones (z de dos muestras, dos colas) con proporción
+// combinada para el error estándar. Compara p1=k1/n1 vs p2=k2/n2 bajo
+// H0: p1=p2. Devuelve {z, p, p1, p2, diff}. Con N pequeño el p-valor es
+// orientativo (baja potencia); reportar siempre junto al IC.
+function twoPropZTest(k1, n1, k2, n2) {
+  if (!n1 || !n2) return { z: null, p: null, p1: null, p2: null, diff: null };
+  const p1 = k1 / n1, p2 = k2 / n2;
+  const pPool = (k1 + k2) / (n1 + n2);
+  const se = Math.sqrt(pPool * (1 - pPool) * (1 / n1 + 1 / n2));
+  if (se === 0) return { z: null, p: null, p1, p2, diff: p1 - p2 };
+  const z = (p1 - p2) / se;
+  const p = Math.min(1, Math.max(0, 2 * (1 - normalCDF(Math.abs(z)))));
+  return { z, p, p1, p2, diff: p1 - p2 };
+}
+
+// ─── SECCIÓN 6: Análisis individual por jugador (componente autónomo) ─────────
+// Recibe statsByPlayer ya calculado y maneja su propio estado de acordeón.
+// Los δ individuales son EXPLORATORIOS: con ~30 partidas por rol los IC son
+// anchos. La conclusión formal sobre el efecto de la trampa viene de la
+// Sección 3 (agregada). El baseline de cada jugador es su propio WR
+// limpio-vs-limpio (NO 50%), para controlar su habilidad basal.
+function PlayerAnalysisSection({ statsByPlayer, Card, MIN_N = 15 }) {
+  const [openId, setOpenId] = useState(null);
+  const pct1 = v => v==null || Number.isNaN(v) ? "—" : `${(v*100).toFixed(1)}%`;
+  const pp1  = v => v==null || Number.isNaN(v) ? "—" : `${v>0?"+":""}${(v*100).toFixed(1)}pp`;
+  const wrColor = v => v==null ? "#555" : v>=0.55 ? "#22c55e" : v<=0.45 ? "#ef4444" : "#eab308";
+
+  const players = Object.values(statsByPlayer);
+  // Ranking por deltaCheat descendente (quién más explotó la trampa).
+  const ranked = [...players].sort((a,b)=>{
+    if (a.deltaCheat==null) return 1;
+    if (b.deltaCheat==null) return -1;
+    return b.deltaCheat - a.deltaCheat;
+  });
+
+  const veredicto = (p) => {
+    if (p.roles.cheater.n < MIN_N || p.roles.baseline.n < MIN_N) return {t:"datos insuf.",c:"#555"};
+    if (p.deltaCheat==null) return {t:"—",c:"#555"};
+    // ¿El IC de la diferencia (aprox por z-test) excluye 0?
+    const sig = p.pValCheatVsBaseline!=null && p.pValCheatVsBaseline<0.05;
+    if (p.deltaCheat > 0.03) return sig ? {t:"↑ se benefició (sig.)",c:"#22c55e"} : {t:"↑ se benefició",c:"#4ade80"};
+    if (p.deltaCheat < -0.03) return sig ? {t:"↓ peor con trampa (sig.)",c:"#ef4444"} : {t:"↓ no aprovechó",c:"#f87171"};
+    return {t:"≈ neutro",c:"#aaa"};
+  };
+
+  const ROLE_ROWS = [
+    {key:"baseline", label:"🎯 Limpio↔limpio"},
+    {key:"cheater",  label:"🃏 Yo trampa"},
+    {key:"victim",   label:"👁 Rival trampa"},
+    {key:"both",     label:"⚔️ Ambos trampa"},
+  ];
+
+  const th = {padding:"5px 8px",textAlign:"left",color:"#444",fontWeight:700,fontSize:11,whiteSpace:"nowrap"};
+  const td = {padding:"6px 8px",fontFamily:"monospace"};
+
+  return (
+    <Card accent="#3b82f6">
+      <div style={{fontSize:11,color:"#555",fontWeight:700,marginBottom:12,letterSpacing:1}}>
+        ANÁLISIS INDIVIDUAL POR JUGADOR
+      </div>
+
+      {/* RANKING */}
+      <div style={{fontSize:11,color:"#777",marginBottom:6}}>
+        Ranking por δ trampa (WR como tramposo − WR limpio propio):
+      </div>
+      <div style={{overflowX:"auto",marginBottom:18}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+          <thead>
+            <tr style={{borderBottom:"1px solid #1e1e2e"}}>
+              {["Jugador","WR limpio","WR tramposo","δ trampa","n","Veredicto"].map(h=>(
+                <th key={h} style={th}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {ranked.map(p=>{
+              const v = veredicto(p);
+              return (
+                <tr key={p.uid} style={{borderBottom:"1px solid #0f0f1a"}}>
+                  <td style={{padding:"6px 8px",color:p.color||"#ddd",fontWeight:700}}>
+                    {p.avatar} {p.nick}{p.isBot?" ·bot":""}
+                  </td>
+                  <td style={{...td,color:wrColor(p.roles.baseline.wr)}}>{pct1(p.roles.baseline.wr)}</td>
+                  <td style={{...td,color:wrColor(p.roles.cheater.wr)}}>{pct1(p.roles.cheater.wr)}</td>
+                  <td style={{...td,color:p.deltaCheat==null?"#555":p.deltaCheat>0?"#22c55e":"#ef4444",fontWeight:700}}>
+                    {pp1(p.deltaCheat)}
+                  </td>
+                  <td style={{...td,color:"#777"}}>{p.roles.cheater.n}</td>
+                  <td style={{padding:"6px 8px",fontSize:11,color:v.c,fontWeight:700}}>{v.t}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* TARJETAS EXPANDIBLES */}
+      <div style={{display:"flex",flexDirection:"column",gap:8}}>
+        {ranked.map(p=>{
+          const open = openId===p.uid;
+          return (
+            <div key={p.uid} style={{border:"1px solid #1e1e2e",borderRadius:8,overflow:"hidden"}}>
+              <div onClick={()=>setOpenId(open?null:p.uid)}
+                style={{display:"flex",alignItems:"center",gap:10,padding:"10px 12px",
+                  cursor:"pointer",background:open?"#12121c":"transparent"}}>
+                <span style={{fontSize:16}}>{p.avatar}</span>
+                <span style={{fontWeight:700,color:p.color||"#ddd",minWidth:90}}>{p.nick}</span>
+                <span style={{fontSize:11,color:"#777"}}>
+                  WR {pct1(p.global.wrGlobal)} · {p.global.wins}V {p.global.losses}D {p.global.casa}🏠
+                </span>
+                <span style={{fontSize:11,color:p.global.balance>=0?"#22c55e":"#ef4444",marginLeft:"auto",fontFamily:"monospace"}}>
+                  {p.global.balance>=0?"+":""}{p.global.balance} fichas
+                </span>
+                <span style={{fontSize:12,color:"#555"}}>{open?"▲":"▼"}</span>
+              </div>
+
+              {open && (
+                <div style={{padding:"4px 12px 14px"}}>
+                  {/* Tabla por rol */}
+                  <div style={{overflowX:"auto",marginBottom:10}}>
+                    <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                      <thead>
+                        <tr style={{borderBottom:"1px solid #1e1e2e"}}>
+                          {["Rol","n","W","D","🏠","WR","IC95% Wilson"].map(h=>(<th key={h} style={th}>{h}</th>))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {ROLE_ROWS_render(ROLE_ROWS, p, td, pct1, wrColor, MIN_N)}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* δ trampa destacado */}
+                  <div style={{background:"#12121c",borderRadius:6,padding:"8px 10px",marginBottom:10,fontSize:12}}>
+                    <span style={{color:"#aaa"}}>δ trampa = WR(yo trampa) − WR(limpio propio) = </span>
+                    <span style={{color:p.deltaCheat==null?"#555":p.deltaCheat>0?"#22c55e":"#ef4444",fontWeight:700}}>
+                      {pp1(p.deltaCheat)}
+                    </span>
+                    <span style={{color:"#666"}}> · p(exploratorio) = {p.pValCheatVsBaseline==null?"—":p.pValCheatVsBaseline.toFixed(3)}</span>
+                    <br/>
+                    <span style={{color:"#aaa"}}>δ víctima = WR(rival trampa) − WR(limpio propio) = </span>
+                    <span style={{color:p.deltaVictim==null?"#555":p.deltaVictim<0?"#ef4444":"#22c55e",fontWeight:700}}>
+                      {pp1(p.deltaVictim)}
+                    </span>
+                  </div>
+
+                  {/* Matriz cabeza a cabeza */}
+                  <div style={{fontSize:11,color:"#777",marginBottom:4}}>Cabeza a cabeza (WR de {p.nick} vs cada rival):</div>
+                  <div style={{overflowX:"auto",marginBottom:10}}>
+                    <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                      <thead>
+                        <tr style={{borderBottom:"1px solid #1e1e2e"}}>
+                          {["Rival","n","WR","como tramposo","como víctima"].map(h=>(<th key={h} style={th}>{h}</th>))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {Object.values(p.vsRival).map(vr=>(
+                          <tr key={vr.uid} style={{borderBottom:"1px solid #0f0f1a"}}>
+                            <td style={{padding:"6px 8px",color:vr.color||"#ddd",fontWeight:700}}>{vr.avatar} {vr.nick}</td>
+                            <td style={{...td,color:"#777"}}>{vr.n}</td>
+                            <td style={{...td,color:wrColor(vr.wr)}}>{pct1(vr.wr)}</td>
+                            <td style={{...td,color:wrColor(vr.wrCheater)}}>{pct1(vr.wrCheater)}<span style={{color:"#555"}}> ({vr.nCheater})</span></td>
+                            <td style={{...td,color:wrColor(vr.wrVictim)}}>{pct1(vr.wrVictim)}<span style={{color:"#555"}}> ({vr.nVictim})</span></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Desglose V/D por condición */}
+                  <div style={{fontSize:11,color:"#aaa",lineHeight:1.6}}>
+                    De sus <b style={{color:"#22c55e"}}>{p.global.wins} victorias</b>:{" "}
+                    {p.breakdown.winsCheating} haciendo trampa, {p.breakdown.winsClean} sin trampa.<br/>
+                    De sus <b style={{color:"#ef4444"}}>{p.global.losses} derrotas</b>:{" "}
+                    {p.breakdown.lossesAsVictim} siendo víctima de trampa, {p.breakdown.lossesOther} en igualdad de condiciones.
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{fontSize:10,color:"#444",marginTop:12,lineHeight:1.5}}>
+        ⚠ Con ~30 partidas por rol los intervalos de confianza son anchos: los δ individuales son
+        EXPLORATORIOS/descriptivos, no confirmatorios. La conclusión formal sobre el efecto de la trampa
+        proviene del análisis agregado (sección anterior). Los p-valores NO están corregidos por
+        comparaciones múltiples. El baseline de cada jugador es su propio WR limpio-vs-limpio (no 50%),
+        para aislar el efecto de la trampa de su habilidad basal. Celdas con n&lt;{MIN_N} se marcan como poco fiables.
+      </div>
+    </Card>
+  );
+}
+
+// Renderiza las filas de la tabla por rol (helper para no recalcular inline).
+function ROLE_ROWS_render(rows, p, td, pct1, wrColor, MIN_N) {
+  return rows.map(({key,label})=>{
+    const r = p.roles[key];
+    const insuf = r.n < MIN_N;
+    const ci = r.ci;
+    const ciStr = ci.lo==null ? "—" : `[${Math.round(ci.lo*100)}%, ${Math.round(ci.hi*100)}%]`;
+    return (
+      <tr key={key} style={{borderBottom:"1px solid #0f0f1a",
+        background:key==="cheater"?"#1a1607":"transparent",opacity:insuf?0.55:1}}>
+        <td style={{padding:"6px 8px",color:"#ddd",fontWeight:key==="cheater"?700:400}}>{label}</td>
+        <td style={{...td,color:insuf?"#a16207":"#777"}}>{r.n}{insuf?"⚠":""}</td>
+        <td style={{...td,color:"#22c55e"}}>{r.wins}</td>
+        <td style={{...td,color:"#ef4444"}}>{r.losses}</td>
+        <td style={{...td,color:"#a855f7"}}>{r.casa}</td>
+        <td style={{...td,color:wrColor(r.wr),fontWeight:700}}>{pct1(r.wr)}</td>
+        <td style={{...td,color:"#555",fontSize:11}}>{ciStr}</td>
+      </tr>
+    );
+  });
+}
+
 // ─── GESTOR SCREEN ────────────────────────────────────────────────────────────
 function GestorScreen({ roomCode }) {
   const [room,       setRoom]      = useState(null);
@@ -2523,6 +2739,110 @@ function GestorScreen({ roomCode }) {
                   </div>
                 </Card>
               );
+            })()}
+
+            {/* SECCIÓN 6 — Análisis individual por jugador */}
+            {(()=>{
+              const MIN_N = 15;
+              // Inicializa estructura por jugador.
+              const roleTemplate = () => ({ n:0, wins:0, losses:0, casa:0, wr:null, ci:{lo:null,hi:null} });
+              const sbp = {};
+              allPlayers.forEach(([uid,pl])=>{
+                sbp[uid] = {
+                  uid, nick:pl.nickname, avatar:pl.avatar, color:pl.color, isBot:!!pl.isBot,
+                  global:{ jugadas:0, wins:0, losses:0, casa:0, wrGlobal:null, balance:(balance?.[uid]??10)-10 },
+                  roles:{ baseline:roleTemplate(), cheater:roleTemplate(), victim:roleTemplate(), both:roleTemplate() },
+                  vsRival:{},
+                  breakdown:{ winsCheating:0, winsClean:0, lossesAsVictim:0, lossesOther:0 },
+                };
+              });
+
+              const ensureRival = (jUid, rUid) => {
+                const j = sbp[jUid]; if (!j) return null;
+                if (!j.vsRival[rUid]) {
+                  const rp = sbp[rUid] || {};
+                  j.vsRival[rUid] = { uid:rUid, nick:rp.nick||"—", avatar:rp.avatar||"", color:rp.color,
+                    n:0, wins:0, losses:0, wr:null,
+                    nCheater:0, winsCheater:0, wrCheater:null,
+                    nVictim:0, winsVictim:0, wrVictim:null };
+                }
+                return j.vsRival[rUid];
+              };
+
+              // Clasifica el rol del jugador j en una partida según el estado.
+              const rolDe = (uid, pA, pB, estado) => {
+                if (estado==="limpio") return "baseline";
+                if (estado==="ambos_trampa") return "both";
+                // asimétrico: A_trampa → pA tramposo; B_trampa → pB tramposo
+                const tramposo = estado==="A_trampa" ? pA : pB;
+                return uid===tramposo ? "cheater" : "victim";
+              };
+
+              resLogs.forEach(l=>{
+                const pd      = partidas?.[l.partida]?.[l.pairKey]||{};
+                const [pA,pB] = pd.jugadores||[];
+                if (!pA||!pB) return;
+                const estado  = pd.estadoPartida||"limpio";
+                const gCasa   = l.jugador==="casa";
+
+                [pA,pB].forEach(uid=>{
+                  const j = sbp[uid]; if (!j) return;
+                  const rival = uid===pA?pB:pA;
+                  const rol   = rolDe(uid, pA, pB, estado);
+                  const won   = !gCasa && l.jugador===uid;
+                  const lost  = !gCasa && l.jugador===rival;
+
+                  j.global.jugadas++;
+                  if (gCasa) j.global.casa++; else if (won) j.global.wins++; else j.global.losses++;
+
+                  const R = j.roles[rol];
+                  R.n++;
+                  if (gCasa) R.casa++; else if (won) R.wins++; else R.losses++;
+
+                  // breakdown de V/D por condición de trampa
+                  if (won) {
+                    if (rol==="cheater"||rol==="both") j.breakdown.winsCheating++;
+                    else j.breakdown.winsClean++;
+                  } else if (lost) {
+                    if (rol==="victim"||rol==="both") j.breakdown.lossesAsVictim++;
+                    else j.breakdown.lossesOther++;
+                  }
+
+                  // cabeza a cabeza
+                  const vr = ensureRival(uid, rival);
+                  if (vr && !gCasa) {
+                    vr.n++; if (won) vr.wins++; else vr.losses++;
+                    if (rol==="cheater"){ vr.nCheater++; if(won) vr.winsCheater++; }
+                    if (rol==="victim"){  vr.nVictim++;  if(won) vr.winsVictim++;  }
+                  }
+                });
+              });
+
+              // Deriva WR + IC por rol, WR global, y métricas δ.
+              Object.values(sbp).forEach(j=>{
+                const wr = (w,l)=> (w+l)>0 ? w/(w+l) : null;
+                ["baseline","cheater","victim","both"].forEach(k=>{
+                  const R=j.roles[k];
+                  R.wr = wr(R.wins,R.losses);
+                  const denom = R.wins+R.losses;
+                  R.ci = denom>0 ? wilsonInterval(R.wins, denom) : {lo:null,hi:null};
+                });
+                j.global.wrGlobal = wr(j.global.wins, j.global.losses);
+                const base = j.roles.baseline.wr, ch = j.roles.cheater.wr, vic = j.roles.victim.wr;
+                j.deltaCheat  = (base!=null && ch!=null)  ? ch  - base : null;
+                j.deltaVictim = (base!=null && vic!=null) ? vic - base : null;
+                // test dos proporciones: cheater vs baseline (basado en no-empates)
+                const t = twoPropZTest(j.roles.cheater.wins, j.roles.cheater.wins+j.roles.cheater.losses,
+                                       j.roles.baseline.wins, j.roles.baseline.wins+j.roles.baseline.losses);
+                j.pValCheatVsBaseline = t.p;
+                Object.values(j.vsRival).forEach(vr=>{
+                  vr.wr        = wr(vr.wins, vr.losses);
+                  vr.wrCheater = vr.nCheater>0 ? vr.winsCheater/vr.nCheater : null;
+                  vr.wrVictim  = vr.nVictim>0  ? vr.winsVictim/vr.nVictim   : null;
+                });
+              });
+
+              return <PlayerAnalysisSection statsByPlayer={sbp} Card={Card} MIN_N={MIN_N} />;
             })()}
 
             {/* SECCIÓN 4 — Win rate por ronda de retiro */}
