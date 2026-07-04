@@ -2106,17 +2106,19 @@ function GestorScreen({ roomCode }) {
           <div style={{display:"flex",flexDirection:"column",gap:12}}>
 
             {/* SECCIÓN 1 — métricas globales */}
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(145px,1fr))",gap:8}}>
               {[
                 {label:"Enfrentamientos",   val:jugadasReal,   color:"#22c55e",
                   sub:`${totalReal} total · ${totalP} por jugador`},
-                {label:"Faltantes",         val:faltantesReal, color:"#ef4444"},
-                {label:"Fichas en juego",   val:fichasTotal,   color:"#f97316"},
-                {label:"Fichas de la casa", val:fichasCasa,    color:"#a855f7", full:true},
-              ].map(({label,val,color,sub,full})=>(
+                {label:"Faltantes",         val:faltantesReal, color:"#ef4444",
+                  sub:"enfrentamientos pendientes"},
+                {label:"Fichas jugadores",  val:fichasTotal,   color:"#f97316",
+                  sub:"suma de balances"},
+                {label:"Fichas casa",       val:fichasCasa,    color:"#a855f7",
+                  sub:"pozos ganados por empate/retiro"},
+              ].map(({label,val,color,sub})=>(
                 <div key={label} style={{background:"#12121e",borderRadius:12,padding:"14px 16px",
-                  border:`1px solid ${color}22`,textAlign:"center",
-                  ...(full?{gridColumn:"1 / -1"}:{})}}>
+                  border:`1px solid ${color}22`,textAlign:"center"}}>
                   <div style={{fontSize:28,fontWeight:900,color}}>{val}</div>
                   <div style={{fontSize:11,color:"#555",marginTop:4}}>{label}</div>
                   {sub&&<div style={{fontSize:10,color:"#444",marginTop:2}}>{sub}</div>}
@@ -2182,10 +2184,19 @@ function GestorScreen({ roomCode }) {
               </div>
             </Card>
 
-            {/* SECCIÓN 3 — Evidencia de ventaja por trampa: estimador + controles */}
+            {/* SECCIÓN 3 — Evidencia de ventaja por trampa: efecto global + controles */}
             {(()=>{
-              const asim = { n:0, winsTramposo:0, pos:{ A:{wins:0,n:0}, B:{wins:0,n:0} } };
-              const ctrl = { limpio:{winsA:0,n:0}, ambos_trampa:{winsA:0,n:0} };
+              const asim = {
+                total:0, jugadorDecide:0, casa:0,
+                winsTramposo:0, winsLimpio:0,
+                sumDeltaProb:0, sumDeltaProbSq:0,
+                sumChipDiff:0, sumChipDiffSq:0,
+                sumCheatPayoff:0, sumCheatPayoffSq:0,
+                potTotal:0,
+                pos:{ A:{total:0,winsTramposo:0,winsLimpio:0,casa:0,potTotal:0},
+                      B:{total:0,winsTramposo:0,winsLimpio:0,casa:0,potTotal:0} }
+              };
+              const ctrl = { limpio:{winsA:0,n:0,total:0,casa:0}, ambos_trampa:{winsA:0,n:0,total:0,casa:0} };
               const ties = {
                 limpio:{ties:0,total:0}, asimetrico:{ties:0,total:0}, ambos_trampa:{ties:0,total:0},
               };
@@ -2196,41 +2207,140 @@ function GestorScreen({ roomCode }) {
                 if (!pA||!pB) return;
                 const estado  = pd.estadoPartida||"limpio";
                 const gCasa   = l.jugador==="casa";
+                const pot     = Number(pd.pot || 2);
+                const halfPot = pot / 2;
                 const grupo   = estado==="limpio" ? "limpio"
                               : estado==="ambos_trampa" ? "ambos_trampa" : "asimetrico";
 
                 ties[grupo].total++;
-                if (gCasa) { ties[grupo].ties++; return; } // empates: solo contexto (Bloque C)
+                if (gCasa) ties[grupo].ties++;
 
                 if (grupo==="asimetrico") {
                   const tramposoUid  = estado==="A_trampa" ? pA : pB;
-                  const ganoTramposo = l.jugador===tramposoUid;
+                  const limpioUid    = estado==="A_trampa" ? pB : pA;
                   const pos          = estado==="A_trampa" ? "A" : "B";
-                  asim.n++; asim.pos[pos].n++;
-                  if (ganoTramposo) { asim.winsTramposo++; asim.pos[pos].wins++; }
+                  const ganoTramposo = l.jugador===tramposoUid;
+                  const ganoLimpio   = l.jugador===limpioUid;
+
+                  // Variable global principal por partida:
+                  // +1 si gana el tramposo, -1 si gana el limpio, 0 si gana la casa.
+                  // Su promedio es Δglobal = P(gana tramposo) - P(gana limpio).
+                  const yProb = ganoTramposo ? 1 : ganoLimpio ? -1 : 0;
+
+                  // Misma lógica en fichas netas relativas. Como ambos aportan lo mismo,
+                  // si gana el tramposo su payoff relativo vs. el limpio es +pot; si gana
+                  // el limpio es -pot; si gana casa, ambos pierden lo mismo y la diferencia es 0.
+                  const yChipDiff = yProb * pot;
+
+                  // Payoff individual del jugador tramposo en esa partida.
+                  // Gana +pot/2 si gana; pierde -pot/2 si gana el limpio o la casa.
+                  const cheatPayoff = ganoTramposo ? halfPot : -halfPot;
+
+                  asim.total++;
+                  asim.potTotal += pot;
+                  asim.sumDeltaProb += yProb;
+                  asim.sumDeltaProbSq += yProb*yProb;
+                  asim.sumChipDiff += yChipDiff;
+                  asim.sumChipDiffSq += yChipDiff*yChipDiff;
+                  asim.sumCheatPayoff += cheatPayoff;
+                  asim.sumCheatPayoffSq += cheatPayoff*cheatPayoff;
+                  asim.pos[pos].total++;
+                  asim.pos[pos].potTotal += pot;
+
+                  if (gCasa) {
+                    asim.casa++;
+                    asim.pos[pos].casa++;
+                    return;
+                  }
+
+                  asim.jugadorDecide++;
+                  if (ganoTramposo) {
+                    asim.winsTramposo++;
+                    asim.pos[pos].winsTramposo++;
+                  } else if (ganoLimpio) {
+                    asim.winsLimpio++;
+                    asim.pos[pos].winsLimpio++;
+                  }
                 } else {
                   const bucket = ctrl[grupo];
+                  bucket.total++;
+                  if (gCasa) { bucket.casa++; return; }
                   bucket.n++;
                   if (l.jugador===pA) bucket.winsA++;
                 }
               });
 
-              // ── BLOQUE A: estimador del efecto ──────────────────────────────────
-              const wrTramposo  = asim.n>0 ? asim.winsTramposo/asim.n : null;
-              const deltaHat    = wrTramposo!=null ? wrTramposo-0.5 : null;
-              const ciEfecto    = wilsonInterval(asim.winsTramposo, asim.n);
-              const pValEfecto  = binomTestTwoSided(asim.winsTramposo, asim.n, 0.5);
-              const wrPosA      = asim.pos.A.n>0 ? asim.pos.A.wins/asim.pos.A.n : null;
-              const wrPosB      = asim.pos.B.n>0 ? asim.pos.B.wins/asim.pos.B.n : null;
-              const deltaCorregido = (wrPosA!=null&&wrPosB!=null) ? ((wrPosA+wrPosB)/2)-0.5 : null;
-              const veredicto = pValEfecto==null ? "Datos insuficientes"
-                : pValEfecto<0.05 && deltaHat>0 ? "Ventaja significativa"
-                : pValEfecto<0.05 && deltaHat<0 ? "Desventaja significativa"
-                : "Sin evidencia";
-              const veredictoColor = veredicto==="Ventaja significativa" ? "#22c55e"
-                : veredicto==="Desventaja significativa" ? "#ef4444" : "#aaa";
+              const meanCi = (sum, sumSq, n, z=1.96) => {
+                if (!n) return {mean:null, lo:null, hi:null, se:null};
+                const mean = sum/n;
+                const variance = n>1 ? Math.max(0, (sumSq - n*mean*mean)/(n-1)) : 0;
+                const se = Math.sqrt(variance/n);
+                return { mean, lo:mean-z*se, hi:mean+z*se, se };
+              };
 
-              // ── BLOQUE B: controles ─────────────────────────────────────────────
+              const pct = v => v==null || Number.isNaN(v) ? "—" : `${Math.round(v*100)}%`;
+              const pct1 = v => v==null || Number.isNaN(v) ? "—" : `${(v*100).toFixed(1)}%`;
+              const pp  = v => v==null || Number.isNaN(v) ? "—" : `${v>0?"+":""}${Math.round(v*100)}pp`;
+              const pp1 = v => v==null || Number.isNaN(v) ? "—" : `${v>0?"+":""}${(v*100).toFixed(1)}pp`;
+              const num = v => v==null || Number.isNaN(v) ? "—" : `${v>0?"+":""}${v.toFixed(2)}`;
+              const icWilson = c => c.lo==null ? "—" : `[${Math.round(c.lo*100)}%, ${Math.round(c.hi*100)}%]`;
+              const icMeanPP = c => c.lo==null ? "—" : `[${pp1(c.lo)}, ${pp1(c.hi)}]`;
+              const icMeanNum = c => c.lo==null ? "—" : `[${num(c.lo)}, ${num(c.hi)}]`;
+              const clamp01 = v => Math.max(0, Math.min(1, v));
+
+              // ── INDICADOR PRINCIPAL: efecto global ─────────────────────────────
+              const pWinCheat   = asim.total>0 ? asim.winsTramposo/asim.total : null;
+              const pWinClean   = asim.total>0 ? asim.winsLimpio/asim.total : null;
+              const pCasaAsim   = asim.total>0 ? asim.casa/asim.total : null;
+              const deltaGlobal = asim.total>0 ? (asim.winsTramposo-asim.winsLimpio)/asim.total : null;
+              const ciDeltaGlobal = meanCi(asim.sumDeltaProb, asim.sumDeltaProbSq, asim.total);
+              const pValGlobal = deltaGlobal==null || ciDeltaGlobal.se===0 ? null : (()=>{
+                const z = Math.abs(deltaGlobal/ciDeltaGlobal.se);
+                return 2*(1-normalCDF(z));
+              })();
+
+              const avgChipDiff = asim.total>0 ? asim.sumChipDiff/asim.total : null;
+              const ciChipDiff = meanCi(asim.sumChipDiff, asim.sumChipDiffSq, asim.total);
+              const avgCheatPayoff = asim.total>0 ? asim.sumCheatPayoff/asim.total : null;
+              const ciCheatPayoff = meanCi(asim.sumCheatPayoff, asim.sumCheatPayoffSq, asim.total);
+              const avgPotAsim = asim.total>0 ? asim.potTotal/asim.total : null;
+              const rrWin = (pWinCheat!=null && pWinClean>0) ? pWinCheat/pWinClean : null;
+
+              const globalVerdict = pValGlobal==null ? "Datos insuficientes"
+                : pValGlobal<0.05 && deltaGlobal>0 ? "Ventaja global significativa"
+                : pValGlobal<0.05 && deltaGlobal<0 ? "Desventaja global significativa"
+                : "Sin evidencia global suficiente";
+              const globalColor = globalVerdict==="Ventaja global significativa" ? "#22c55e"
+                : globalVerdict==="Desventaja global significativa" ? "#ef4444" : "#aaa";
+
+              // ── INDICADOR SECUNDARIO: efecto condicional a que gane un jugador ──
+              const wrTramposo  = asim.jugadorDecide>0 ? asim.winsTramposo/asim.jugadorDecide : null;
+              const deltaCond   = wrTramposo!=null ? wrTramposo-0.5 : null;
+              const ciCond      = wilsonInterval(asim.winsTramposo, asim.jugadorDecide);
+              const pValCond    = binomTestTwoSided(asim.winsTramposo, asim.jugadorDecide, 0.5);
+
+              const posStats = pos => {
+                const b = asim.pos[pos];
+                const decide = b.winsTramposo + b.winsLimpio;
+                const pT = b.total ? b.winsTramposo/b.total : null;
+                const pL = b.total ? b.winsLimpio/b.total : null;
+                return {
+                  ...b,
+                  decide,
+                  pT,
+                  pL,
+                  pCasa:b.total ? b.casa/b.total : null,
+                  delta:b.total ? (b.winsTramposo-b.winsLimpio)/b.total : null,
+                  wr:decide ? b.winsTramposo/decide : null,
+                  avgPot:b.total ? b.potTotal/b.total : null,
+                };
+              };
+              const posA = posStats("A");
+              const posB = posStats("B");
+              const deltaGlobalPosCorr = (posA.delta!=null && posB.delta!=null) ? (posA.delta+posB.delta)/2 : null;
+              const deltaCondPosCorr = (posA.wr!=null && posB.wr!=null) ? ((posA.wr+posB.wr)/2)-0.5 : null;
+
+              // ── CONTROLES ──────────────────────────────────────────────────────
               const ciLimpio = wilsonInterval(ctrl.limpio.winsA, ctrl.limpio.n);
               const ciAmbos  = wilsonInterval(ctrl.ambos_trampa.winsA, ctrl.ambos_trampa.n);
               const sesgoCheck = ci => ci.p==null ? null : (ci.lo<=0.5 && ci.hi>=0.5)
@@ -2239,155 +2349,177 @@ function GestorScreen({ roomCode }) {
               const sesgoAmbos  = sesgoCheck(ciAmbos);
               const controlesCoinciden = (ciLimpio.p!=null && ciAmbos.p!=null)
                 ? Math.abs(ciLimpio.p-ciAmbos.p) < 0.10 : null;
-
-              // δ vía factorial: P(A gana|A_trampa) − P(A gana|limpio). Debería
-              // aproximarse a δ̂ del Bloque A si no hay confusión con la posición.
-              const deltaFactorial = (wrPosA!=null && ciLimpio.p!=null) ? wrPosA-ciLimpio.p : null;
-
-              // ── BLOQUE C: empates por estado ────────────────────────────────────
               const pctTies = t => t.total>0 ? t.ties/t.total : null;
-
-              const pct = v => v==null ? "—" : `${Math.round(v*100)}%`;
-              const pp  = v => v==null ? "—" : `${v>0?"+":""}${Math.round(v*100)}pp`;
-              const ic  = c => c.lo==null ? "—" : `[${Math.round(c.lo*100)}%, ${Math.round(c.hi*100)}%]`;
 
               return (
                 <Card accent="#eab308">
-                  <div style={{fontSize:11,color:"#555",fontWeight:700,marginBottom:12,letterSpacing:1}}>
-                    EVIDENCIA DE VENTAJA POR TRAMPA
-                  </div>
-
-                  {/* BLOQUE A */}
-                  <div style={{fontSize:11,color:"#eab308",fontWeight:700,marginBottom:8}}>
-                    A · ESTIMADOR DEL EFECTO (δ̂)
-                  </div>
-                  <div style={{display:"flex",gap:16,flexWrap:"wrap",alignItems:"center",marginBottom:10}}>
-                    <div style={{textAlign:"center"}}>
-                      <div style={{fontSize:26,fontWeight:900,
-                        color:deltaHat==null?"#555":deltaHat>0?"#22c55e":"#ef4444"}}>
-                        {pp(deltaHat)}
+                  <div style={{display:"flex",justifyContent:"space-between",gap:12,alignItems:"flex-start",marginBottom:12,flexWrap:"wrap"}}>
+                    <div>
+                      <div style={{fontSize:11,color:"#555",fontWeight:700,letterSpacing:1}}>
+                        EVIDENCIA DE VENTAJA POR TRAMPA
                       </div>
-                      <div style={{fontSize:10,color:"#555"}}>δ̂ = WR(tramposo) − 50%</div>
+                      <div style={{fontSize:10,color:"#666",marginTop:4,lineHeight:1.45,maxWidth:720}}>
+                        El objetivo aquí es cuantificar cuánto ayuda hacer trampa. El indicador principal usa todas las partidas
+                        asimétricas: gana tramposo, gana limpio o gana la casa. Así no se ocultan empates ni pozos perdidos ante la casa.
+                      </div>
                     </div>
-                    <div style={{fontSize:11,color:"#aaa",lineHeight:1.6}}>
-                      N={asim.n} · WR(tramposo)={pct(wrTramposo)} · IC95% Wilson {ic(ciEfecto)}<br/>
-                      p-valor (binomial 2 colas, aprox. normal + corrección de continuidad) = {pValEfecto==null?"—":pValEfecto.toFixed(4)}<br/>
-                      <span style={{color:veredictoColor,fontWeight:700}}>{veredicto}</span>
+                    <div style={{fontSize:10,color:"#777",background:"#0a0a0f",border:"1px solid #1e1e2e",borderRadius:10,padding:"8px 10px",lineHeight:1.45}}>
+                      Asimétrico = solo un jugador ve un dado privado del rival.<br/>
+                      Casa = empate, ambos retirados o ambos tres unos.
                     </div>
-                  </div>
-                  <div style={{overflowX:"auto",marginBottom:6}}>
-                    <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-                      <thead>
-                        <tr style={{borderBottom:"1px solid #1e1e2e"}}>
-                          {["Desglose por posición","N","WR tramposo","IC95%"].map(h=>(
-                            <th key={h} style={{padding:"5px 8px",textAlign:"left",color:"#444",
-                              fontWeight:700,fontSize:11,whiteSpace:"nowrap"}}>{h}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        <tr style={{borderBottom:"1px solid #0f0f1a"}}>
-                          <td style={{padding:"6px 8px",color:"#aaa"}}>Tramposo es A (estado A_trampa)</td>
-                          <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#aaa"}}>{asim.pos.A.n}</td>
-                          <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#f97316"}}>{pct(wrPosA)}</td>
-                          <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#555"}}>
-                            {ic(wilsonInterval(asim.pos.A.wins,asim.pos.A.n))}
-                          </td>
-                        </tr>
-                        <tr style={{borderBottom:"1px solid #0f0f1a"}}>
-                          <td style={{padding:"6px 8px",color:"#aaa"}}>Tramposo es B (estado B_trampa)</td>
-                          <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#aaa"}}>{asim.pos.B.n}</td>
-                          <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#f97316"}}>{pct(wrPosB)}</td>
-                          <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#555"}}>
-                            {ic(wilsonInterval(asim.pos.B.wins,asim.pos.B.n))}
-                          </td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </div>
-                  <div style={{fontSize:10,color:"#444",marginBottom:14}}>
-                    δ corregido por posición (promedio simple de ambas filas − 50%) = {pp(deltaCorregido)}.
-                    Si difiere mucho de δ̂ de arriba, el efecto está confundido con la posición A/B.
                   </div>
 
-                  {/* BLOQUE B */}
+                  {/* BLOQUE A — GLOBAL */}
+                  <div style={{fontSize:11,color:"#eab308",fontWeight:700,marginBottom:8}}>
+                    A · EFECTO GLOBAL DE LA TRAMPA (incluye casa/empates)
+                  </div>
+
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:8,marginBottom:10}}>
+                    {[
+                      {label:"Δ global", val:pp1(deltaGlobal), color:deltaGlobal==null?"#555":deltaGlobal>0?"#22c55e":"#ef4444",
+                       sub:"P(gana tramposo) − P(gana limpio)"},
+                      {label:"Gana tramposo", val:pct1(pWinCheat), color:"#22c55e", sub:"sobre todas las asimétricas"},
+                      {label:"Gana limpio", val:pct1(pWinClean), color:"#ef4444", sub:"rival sin trampa"},
+                      {label:"Gana casa", val:pct1(pCasaAsim), color:"#a855f7", sub:"empates/retiros"},
+                    ].map(m=>(
+                      <div key={m.label} style={{background:"#0a0a0f",border:`1px solid ${m.color}22`,borderRadius:12,padding:"12px 10px",textAlign:"center"}}>
+                        <div style={{fontSize:24,fontWeight:900,color:m.color}}>{m.val}</div>
+                        <div style={{fontSize:10,color:"#777",fontWeight:700,marginTop:3}}>{m.label}</div>
+                        <div style={{fontSize:9,color:"#444",marginTop:2,lineHeight:1.25}}>{m.sub}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:8,marginBottom:14}}>
+                    <div style={{background:"#0a0a0f",border:"1px solid #1e1e2e",borderRadius:12,padding:12}}>
+                      <div style={{fontSize:10,color:"#777",fontWeight:700,marginBottom:5}}>Lectura estadística</div>
+                      <div style={{fontSize:11,color:"#aaa",lineHeight:1.55}}>
+                        N={asim.total} asimétricas · IC95% Δ {icMeanPP(ciDeltaGlobal)}<br/>
+                        p-valor aprox. normal = {pValGlobal==null?"—":pValGlobal.toFixed(4)}<br/>
+                        <span style={{color:globalColor,fontWeight:800}}>{globalVerdict}</span>
+                      </div>
+                    </div>
+                    <div style={{background:"#0a0a0f",border:"1px solid #1e1e2e",borderRadius:12,padding:12}}>
+                      <div style={{fontSize:10,color:"#777",fontWeight:700,marginBottom:5}}>Lectura en fichas</div>
+                      <div style={{fontSize:11,color:"#aaa",lineHeight:1.55}}>
+                        Ventaja relativa media = <span style={{color:avgChipDiff==null?"#aaa":avgChipDiff>0?"#22c55e":"#ef4444",fontWeight:800}}>{num(avgChipDiff)}</span> fichas/partida<br/>
+                        IC95% {icMeanNum(ciChipDiff)} · pozo medio = {avgPotAsim==null?"—":avgPotAsim.toFixed(2)}<br/>
+                        Payoff medio del tramposo = <span style={{color:avgCheatPayoff==null?"#aaa":avgCheatPayoff>0?"#22c55e":"#ef4444",fontWeight:800}}>{num(avgCheatPayoff)}</span> fichas/partida
+                      </div>
+                    </div>
+                    <div style={{background:"#0a0a0f",border:"1px solid #1e1e2e",borderRadius:12,padding:12}}>
+                      <div style={{fontSize:10,color:"#777",fontWeight:700,marginBottom:5}}>Magnitud relativa</div>
+                      <div style={{fontSize:11,color:"#aaa",lineHeight:1.55}}>
+                        Razón de victoria = {rrWin==null?"—":`${rrWin.toFixed(2)}×`}<br/>
+                        Decididas por jugador = {asim.jugadorDecide} · Casa = {asim.casa}<br/>
+                        Δ global corregido A/B = {pp1(deltaGlobalPosCorr)}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{fontSize:10,color:"#444",lineHeight:1.5,marginBottom:14}}>
+                    Interpretación: Δ global es el beneficio neto en probabilidad. Por ejemplo, +12pp significa que, al incluir también
+                    los casos donde gana la casa, el tramposo obtiene 12 puntos porcentuales más de victorias que el jugador limpio.
+                    Si la casa gana mucho, este valor baja aunque el tramposo sea fuerte cuando la partida sí se decide entre jugadores.
+                  </div>
+
+                  {/* BLOQUE B — CONDICIONAL */}
                   <div style={{fontSize:11,color:"#3b82f6",fontWeight:700,marginBottom:8}}>
-                    B · CONTROLES (validación interna)
+                    B · EFECTO CONDICIONAL (solo cuando gana un jugador)
                   </div>
-                  <div style={{overflowX:"auto",marginBottom:6}}>
-                    <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-                      <thead>
-                        <tr style={{borderBottom:"1px solid #1e1e2e"}}>
-                          {["Estado (control)","N","P(gana A)","IC95%","Check"].map(h=>(
-                            <th key={h} style={{padding:"5px 8px",textAlign:"left",color:"#444",
-                              fontWeight:700,fontSize:11,whiteSpace:"nowrap"}}>{h}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        <tr style={{borderBottom:"1px solid #0f0f1a"}}>
-                          <td style={{padding:"6px 8px",color:"#aaa"}}>🎯 Limpio</td>
-                          <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#aaa"}}>{ctrl.limpio.n}</td>
-                          <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#f97316"}}>{pct(ciLimpio.p)}</td>
-                          <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#555"}}>{ic(ciLimpio)}</td>
-                          <td style={{padding:"6px 8px",fontSize:11,
-                            color:sesgoLimpio?.startsWith("⚠")?"#ef4444":"#22c55e"}}>{sesgoLimpio ?? "—"}</td>
-                        </tr>
-                        <tr style={{borderBottom:"1px solid #0f0f1a"}}>
-                          <td style={{padding:"6px 8px",color:"#aaa"}}>⚔️ Ambos trampa</td>
-                          <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#aaa"}}>{ctrl.ambos_trampa.n}</td>
-                          <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#f97316"}}>{pct(ciAmbos.p)}</td>
-                          <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#555"}}>{ic(ciAmbos)}</td>
-                          <td style={{padding:"6px 8px",fontSize:11,
-                            color:sesgoAmbos?.startsWith("⚠")?"#ef4444":"#22c55e"}}>{sesgoAmbos ?? "—"}</td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </div>
-                  <div style={{fontSize:10,color:"#444",marginBottom:14}}>
-                    Limpio vs. Ambos trampa: {controlesCoinciden==null ? "— (datos insuficientes)" : controlesCoinciden
-                      ? "coinciden (✓ consistente con el modelo)"
-                      : "⚠ difieren notablemente — posible interacción entre condiciones"}.
+                  <div style={{display:"flex",gap:14,flexWrap:"wrap",alignItems:"center",marginBottom:8,background:"#0a0a0f",border:"1px solid #1e1e2e",borderRadius:12,padding:12}}>
+                    <div style={{textAlign:"center",minWidth:110}}>
+                      <div style={{fontSize:24,fontWeight:900,color:deltaCond==null?"#555":deltaCond>0?"#22c55e":"#ef4444"}}>
+                        {pp1(deltaCond)}
+                      </div>
+                      <div style={{fontSize:10,color:"#555"}}>δ decidido = WR − 50%</div>
+                    </div>
+                    <div style={{fontSize:11,color:"#aaa",lineHeight:1.55}}>
+                      N={asim.jugadorDecide} · WR(tramposo)={pct1(wrTramposo)} · IC95% Wilson {icWilson(ciCond)}<br/>
+                      p-valor binomial 2 colas = {pValCond==null?"—":pValCond.toFixed(4)} · δ decidido corregido A/B = {pp1(deltaCondPosCorr)}<br/>
+                      Este valor es útil para saber si la trampa ayuda cuando la casa no interviene, pero no mide el efecto total del juego.
+                    </div>
                   </div>
 
-                  {/* BLOQUE C */}
-                  <div style={{fontSize:11,color:"#a855f7",fontWeight:700,marginBottom:8}}>
-                    C · EMPATES POR ESTADO (contexto)
+                  {/* BLOQUE C — POSICIÓN */}
+                  <div style={{fontSize:11,color:"#f97316",fontWeight:700,marginBottom:8}}>
+                    C · DESGLOSE POR POSICIÓN DEL TRAMPOSO
                   </div>
-                  <div style={{overflowX:"auto"}}>
+                  <div style={{overflowX:"auto",marginBottom:14}}>
                     <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
                       <thead>
                         <tr style={{borderBottom:"1px solid #1e1e2e"}}>
-                          {["Grupo","N","% empates (casa)"].map(h=>(
-                            <th key={h} style={{padding:"5px 8px",textAlign:"left",color:"#444",
-                              fontWeight:700,fontSize:11,whiteSpace:"nowrap"}}>{h}</th>
+                          {["Condición","N total","P tramposo","P limpio","P casa","Δ global","WR decidido","Pozo medio"].map(h=>(
+                            <th key={h} style={{padding:"5px 8px",textAlign:"left",color:"#444",fontWeight:700,fontSize:11,whiteSpace:"nowrap"}}>{h}</th>
                           ))}
                         </tr>
                       </thead>
                       <tbody>
                         {[
-                          {label:"🎯 Limpio",                                t:ties.limpio},
-                          {label:"🃏 Asimétrico (A_trampa / B_trampa)",       t:ties.asimetrico},
-                          {label:"⚔️ Ambos trampa",                          t:ties.ambos_trampa},
-                        ].map(({label,t})=>(
+                          {label:"Tramposo es A", s:posA},
+                          {label:"Tramposo es B", s:posB},
+                        ].map(({label,s})=>(
                           <tr key={label} style={{borderBottom:"1px solid #0f0f1a"}}>
                             <td style={{padding:"6px 8px",color:"#aaa"}}>{label}</td>
-                            <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#aaa"}}>{t.total}</td>
-                            <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#a855f7"}}>{pct(pctTies(t))}</td>
+                            <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#aaa"}}>{s.total}</td>
+                            <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#22c55e"}}>{pct1(s.pT)}</td>
+                            <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#ef4444"}}>{pct1(s.pL)}</td>
+                            <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#a855f7"}}>{pct1(s.pCasa)}</td>
+                            <td style={{padding:"6px 8px",fontFamily:"monospace",color:s.delta==null?"#555":s.delta>0?"#22c55e":"#ef4444"}}>{pp1(s.delta)}</td>
+                            <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#f97316"}}>{pct1(s.wr)}</td>
+                            <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#aaa"}}>{s.avgPot==null?"—":s.avgPot.toFixed(2)}</td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
                   </div>
 
-                  <div style={{fontSize:10,color:"#444",marginTop:10,lineHeight:1.5}}>
-                    Limpio y ambos_trampa son CONTROLES, no miden el efecto directamente: por diseño 2×2, su win
-                    rate agregado esperado es 50% (en limpio nadie tiene ventaja; en ambos_trampa las ventajas de
-                    A y B se cancelan). Por eso el Bloque B mide P(gana A canónico) para detectar sesgo posicional,
-                    no win rate. δ puede estimarse de dos formas que deberían coincidir: directa (Bloque A, win
-                    rate del tramposo en partidas asimétricas) y factorial (P(A gana|A_trampa) − P(A gana|limpio)
-                    = {pp(deltaFactorial)}). Wilson/binomial usan aproximación normal con corrección de
-                    continuidad — orientativos si N es chico.
+                  {/* BLOQUE D — CONTROLES */}
+                  <div style={{fontSize:11,color:"#a855f7",fontWeight:700,marginBottom:8}}>
+                    D · CONTROLES Y EMPATES
+                  </div>
+                  <div style={{overflowX:"auto",marginBottom:8}}>
+                    <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                      <thead>
+                        <tr style={{borderBottom:"1px solid #1e1e2e"}}>
+                          {["Grupo","N total","N decidido","P(gana A)","IC95%","% casa","Check"].map(h=>(
+                            <th key={h} style={{padding:"5px 8px",textAlign:"left",color:"#444",fontWeight:700,fontSize:11,whiteSpace:"nowrap"}}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {[
+                          {label:"🎯 Limpio", c:ctrl.limpio, ci:ciLimpio, check:sesgoLimpio},
+                          {label:"⚔️ Ambos trampa", c:ctrl.ambos_trampa, ci:ciAmbos, check:sesgoAmbos},
+                        ].map(({label,c,ci,check})=>(
+                          <tr key={label} style={{borderBottom:"1px solid #0f0f1a"}}>
+                            <td style={{padding:"6px 8px",color:"#aaa"}}>{label}</td>
+                            <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#aaa"}}>{c.total}</td>
+                            <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#aaa"}}>{c.n}</td>
+                            <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#f97316"}}>{pct1(ci.p)}</td>
+                            <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#555"}}>{icWilson(ci)}</td>
+                            <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#a855f7"}}>{pct1(c.total?c.casa/c.total:null)}</td>
+                            <td style={{padding:"6px 8px",fontSize:11,color:check?.startsWith("⚠")?"#ef4444":"#22c55e"}}>{check ?? "—"}</td>
+                          </tr>
+                        ))}
+                        <tr style={{borderBottom:"1px solid #0f0f1a"}}>
+                          <td style={{padding:"6px 8px",color:"#aaa"}}>🃏 Asimétrico</td>
+                          <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#aaa"}}>{ties.asimetrico.total}</td>
+                          <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#aaa"}}>{asim.jugadorDecide}</td>
+                          <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#555"}}>—</td>
+                          <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#555"}}>—</td>
+                          <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#a855f7"}}>{pct1(pctTies(ties.asimetrico))}</td>
+                          <td style={{padding:"6px 8px",fontSize:11,color:"#777"}}>grupo usado para medir trampa</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div style={{fontSize:10,color:"#444",lineHeight:1.5}}>
+                    Control limpio y ambos_trampa deberían tener P(gana A) cerca de 50%. Si no, existe sesgo de posición A/B.
+                    Limpio vs. ambos_trampa: {controlesCoinciden==null ? "— datos insuficientes" : controlesCoinciden
+                      ? "coinciden, diseño consistente" : "⚠ difieren notablemente"}. La relación entre indicadores es:
+                    Δ global = P(tramposo) − P(limpio), mientras que δ decidido = P(tramposo | ganó un jugador) − 50%.
                   </div>
                 </Card>
               );
