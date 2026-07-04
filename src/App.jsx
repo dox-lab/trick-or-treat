@@ -1600,13 +1600,18 @@ function exportDecisionesCSVData(room, roomCode) {
     "pub_visible_1","pub_visible_2","pub_revelados",
     "score_parcial","win_prob","win_prob_cheat","ev",
     "decision","tiempo_decision_ms",
+    "entro_tarde","orden_llegada","joined_at",
   ];
+
+  const arrivals = room?.scheduler?.arrivals || {};
 
   const rows = rawLogs.map(l => {
     const ronda  = l.ronda || 1;
     const pInfo  = pl[l.jugador] || {};
     const pv1    = l.pub_visible_1 != null ? l.pub_visible_1 : (ronda >= 2 ? l.pub_1 ?? "" : "");
     const pv2    = l.pub_visible_2 != null ? l.pub_visible_2 : (ronda >= 3 ? l.pub_2 ?? "" : "");
+    const arr    = arrivals[l.jugador];  // 0 = inicial; timestamp = entró tarde
+    const entroTarde = pInfo.lateJoin ? "TRUE" : (arr && arr !== 0 ? "TRUE" : "FALSE");
     return [
       l.partida, ronda, l.pairKey || "",
       l.nickname_jugador || pInfo.nickname || l.jugador || "",
@@ -1624,6 +1629,9 @@ function exportDecisionesCSVData(room, roomCode) {
       ((l.ev || 0) * 100).toFixed(1),
       l.accion,
       l.tiempo_decision_ms ?? l.tiempo_ms ?? "",
+      entroTarde,
+      (arr && arr !== 0) ? arr : (pInfo.joinedAt ?? 0),
+      pInfo.joinedAt ?? "",
     ];
   });
 
@@ -1650,7 +1658,15 @@ function exportResultadosCSVData(room, roomCode) {
     "best3_ganador","score_ganador",
     "best3_perdedor","score_perdedor",
     "pot_final","gano_casa","motivo",
+    "ganador_entro_tarde","perdedor_entro_tarde",
   ];
+
+  const arrivals = room?.scheduler?.arrivals || {};
+  const entroTardeUid = (uid) => {
+    if (!uid || uid === "casa") return "";
+    const arr = arrivals[uid];
+    return (pl[uid]?.lateJoin || (arr && arr !== 0)) ? "TRUE" : "FALSE";
+  };
 
   const rows = resLogs.map(l => {
     const pd        = pts[l.partida]?.[l.pairKey] || {};
@@ -1699,10 +1715,63 @@ function exportResultadosCSVData(room, roomCode) {
       pd.pot  ?? 2,
       gCasa ? "TRUE" : "FALSE",
       motivo,
+      entroTardeUid(ganUID),
+      entroTardeUid(perUID),
     ];
   });
 
   _downloadCSV(`tot_${roomCode}_resultados.csv`, cols, rows);
+}
+
+// ─── Panel de jugadores esperando emparejamiento (Control y Partidas) ─────────
+function WaitingPlayersPanel({ room, players, pData, Card, compact=false }) {
+  const config = room?.config;
+  const phase  = room?.status?.phase;
+  if (phase!=="playing" || !config?.dynamicScheduler) return null;
+  const sched = room?.scheduler;
+  const pendingJoins = room?.pendingJoins || {};
+  const enJuego = new Set();
+  Object.values(pData||{}).forEach(d=>(d.jugadores||[]).forEach(j=>enJuego.add(j)));
+  const esperando = (sched?.players||[]).filter(uid=>{
+    if (enJuego.has(uid)) return false;
+    if (players?.[uid]?.isBot) return false;
+    let pend=0;
+    Object.values(sched?.pairs||{}).forEach(pr=>{ if(pr.pA===uid||pr.pB===uid) pend+=(Array.isArray(pr.pending)?pr.pending.length:0); });
+    return pend>0;
+  });
+  const recienLlegados = Object.keys(pendingJoins).filter(uid=>players?.[uid]&&!players[uid].isBot);
+  if (!esperando.length && !recienLlegados.length) return null;
+  return (
+    <Card accent="#3b82f6" style={{marginBottom:12}}>
+      <div style={{fontSize:11,color:"#3b82f6",fontWeight:700,letterSpacing:1,marginBottom:8}}>
+        ⏳ ESPERANDO EMPAREJAMIENTO {esperando.length+recienLlegados.length>0 && `(${esperando.length+recienLlegados.length})`}
+      </div>
+      <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+        {recienLlegados.map(uid=>{
+          const p=players[uid];
+          return (
+            <div key={uid} style={{display:"flex",alignItems:"center",gap:6,background:"#12121e",
+              borderRadius:8,padding:"5px 10px",border:"1px solid #3b82f644"}}>
+              <span style={{fontSize:14}}>{p.avatar}</span>
+              <span style={{fontSize:12,color:p.color,fontWeight:700}}>{p.nickname}</span>
+              <span style={{fontSize:10,color:"#3b82f6"}}>uniéndose…</span>
+            </div>
+          );
+        })}
+        {esperando.filter(uid=>!recienLlegados.includes(uid)).map(uid=>{
+          const p=players[uid]||{};
+          return (
+            <div key={uid} style={{display:"flex",alignItems:"center",gap:6,background:"#12121e",
+              borderRadius:8,padding:"5px 10px",border:"1px solid #1e1e2e"}}>
+              <span style={{fontSize:14}}>{p.avatar}</span>
+              <span style={{fontSize:12,color:p.color||"#aaa"}}>{p.nickname||uid}</span>
+              <span style={{fontSize:10,color:"#555"}}>próximo turno</span>
+            </div>
+          );
+        })}
+      </div>
+    </Card>
+  );
 }
 
 // ─── GESTOR SCREEN ────────────────────────────────────────────────────────────
@@ -2243,6 +2312,9 @@ function GestorScreen({ roomCode, mode="gestor" }) {
             )}
           </Card>
 
+          {/* Jugadores esperando emparejamiento (modo dinámico) */}
+          <WaitingPlayersPanel room={room} players={players} pData={pData} Card={Card}/>
+
           {/* Jugadores humanos */}
           <Card>
             <div style={{fontSize:11,color:"#555",marginBottom:10}}>JUGADORES HUMANOS ({humanPl.length})</div>
@@ -2510,54 +2582,7 @@ function GestorScreen({ roomCode, mode="gestor" }) {
             )}
 
             {/* ── Jugadores esperando emparejamiento (solo modo dinámico) ── */}
-            {phase==="playing" && config?.dynamicScheduler && (()=>{
-              const sched = room?.scheduler;
-              const pendingJoins = room?.pendingJoins || {};
-              const enJuego = new Set();
-              Object.values(pData||{}).forEach(d=>(d.jugadores||[]).forEach(j=>enJuego.add(j)));
-              // jugadores humanos en scheduler pero sin partida este turno
-              const esperando = (sched?.players||[]).filter(uid=>{
-                if (enJuego.has(uid)) return false;
-                if (players?.[uid]?.isBot) return false;
-                // tiene pendientes?
-                let pend=0;
-                Object.values(sched.pairs||{}).forEach(pr=>{ if(pr.pA===uid||pr.pB===uid) pend+=(Array.isArray(pr.pending)?pr.pending.length:0); });
-                return pend>0;
-              });
-              const recienLlegados = Object.keys(pendingJoins).filter(uid=>players?.[uid]&&!players[uid].isBot);
-              if (!esperando.length && !recienLlegados.length) return null;
-              return (
-                <Card accent="#3b82f6" style={{marginBottom:12}}>
-                  <div style={{fontSize:11,color:"#3b82f6",fontWeight:700,letterSpacing:1,marginBottom:8}}>
-                    ⏳ ESPERANDO EMPAREJAMIENTO
-                  </div>
-                  <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-                    {recienLlegados.map(uid=>{
-                      const p=players[uid];
-                      return (
-                        <div key={uid} style={{display:"flex",alignItems:"center",gap:6,background:"#12121e",
-                          borderRadius:8,padding:"5px 10px",border:"1px solid #3b82f644"}}>
-                          <span style={{fontSize:14}}>{p.avatar}</span>
-                          <span style={{fontSize:12,color:p.color,fontWeight:700}}>{p.nickname}</span>
-                          <span style={{fontSize:10,color:"#3b82f6"}}>uniéndose…</span>
-                        </div>
-                      );
-                    })}
-                    {esperando.filter(uid=>!recienLlegados.includes(uid)).map(uid=>{
-                      const p=players[uid]||{};
-                      return (
-                        <div key={uid} style={{display:"flex",alignItems:"center",gap:6,background:"#12121e",
-                          borderRadius:8,padding:"5px 10px",border:"1px solid #1e1e2e"}}>
-                          <span style={{fontSize:14}}>{p.avatar}</span>
-                          <span style={{fontSize:12,color:p.color||"#aaa"}}>{p.nickname||uid}</span>
-                          <span style={{fontSize:10,color:"#555"}}>próximo turno</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </Card>
-              );
-            })()}
+            <WaitingPlayersPanel room={room} players={players} pData={pData} Card={Card}/>
 
             {/* ── SECCIÓN 2: HISTORIAL ── */}
             <div>
