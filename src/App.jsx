@@ -119,6 +119,16 @@ function soundLose() {
  * Dado los 2 dados privados y los dados públicos visibles,
  * toma los 3 con mayor valor individual y devuelve su suma.
  * También verifica si entre esos 3 hay al menos 3 unos (victoria automática).
+ *
+ * REGLAS DE RESOLUCIÓN (ver también resolveRondaDB):
+ *  - Los EMPATES de score los gana la casa, no se reparten entre los
+ *    jugadores. Esto deprime el win-rate observado por jugador unos pocos
+ *    puntos porcentuales (pp) frente a un modelo que repartiera los
+ *    empates 50/50.
+ *  - "TRES UNOS" (>=3 dados con valor 1 en el pool de 4) es victoria
+ *    automática pese a ser la suma mínima posible (score=3). Esto rompe
+ *    la monotonía suma→victoria: un score de 3 puede vencer a un score
+ *    de 17.
  */
 function top3score(privados, publicosVisibles) {
   const pool = [...privados, ...publicosVisibles];
@@ -1008,9 +1018,16 @@ function GestorProfileScreen({ roomCode, onJoined }) {
  * Reglas:
  *  1. Ambos se retiran → casa gana (ganador="casa", motivo="Ambos retirados")
  *  2. Uno se retira → el otro gana
- *  3. Empate en top3 → casa gana (ganador="casa", motivo="Empate")
+ *  3. Empate en top3 → casa gana (ganador="casa", motivo="Empate"). Los
+ *     empates NO se reparten entre los jugadores, van al pot de la casa;
+ *     esto deprime el win-rate agregado observado por jugador unos pocos
+ *     puntos porcentuales (pp) respecto a un modelo que repartiera el
+ *     empate 50/50 entre ambos.
  *  4. Mayor top3 gana
- *  5. 3-unos en top3 → victoria automática (solo si el rival no también tiene)
+ *  5. 3-unos en top3 → victoria automática (solo si el rival no también
+ *     tiene). Rompe la monotonía suma→victoria: un score de 3 (el mínimo
+ *     posible) puede vencer a un score de 17, así que "mayor suma" no es
+ *     sinónimo de "gana" en el modelo estadístico — ver top3score.
  */
 async function resolveRondaDB(roomCode, room, n, pairKey, pd, ronda, pidA, decA, pidB, decB) {
   const ambosFold = decA==="retirarse" && decB==="retirarse";
@@ -1183,6 +1200,11 @@ function GestorScreen({ roomCode }) {
           const pdFresh = snap.val();
           const tiempo  = Math.max(0, Date.now()-(pdFresh?.startedAt||Date.now()));
           const logRef  = push(ref(db,`rooms/${roomCode}/logs`));
+          const esTramposo   = pd.condicion?.[pid] === "tramposo";
+          const winProb      = estimateWinProb(myDice, pub);
+          const winProbCheat = esTramposo
+            ? estimateWinProb(myDice, pub, 600, [pd.dados?.[rival]?.[0]])
+            : winProb;
           await set(logRef,{
             partida:n,pairKey,jugador:pid,rival,
             nickname_jugador:room.players?.[pid]?.nickname||pid,
@@ -1198,7 +1220,8 @@ function GestorScreen({ roomCode }) {
             pub_visible_2:ronda>=3?pd.publicos?.[1]||null:null,
             pub_revelados:ronda-1,
             score_parcial:top3score(myDice,pub).score,
-            win_prob:parseFloat(estimateWinProb(myDice,pub).toFixed(3)),
+            win_prob:parseFloat(winProb.toFixed(3)),
+            win_prob_cheat:parseFloat(winProbCheat.toFixed(3)),
             tiempo_decision_ms:tiempo,
             resultado:null,ts:Date.now(),
           });
@@ -1330,6 +1353,11 @@ function GestorScreen({ roomCode }) {
         const pdFresh = snap2.val();
         const tiempo  = Math.max(0, Date.now()-(pdFresh?.startedAt||Date.now()));
         const logRef  = push(ref(db,`rooms/${roomCode}/logs`));
+        const esTramposo   = pdC.condicion?.[pid] === "tramposo";
+        const winProb      = estimateWinProb(myDice, pub);
+        const winProbCheat = esTramposo
+          ? estimateWinProb(myDice, pub, 600, [pdC.dados?.[rival]?.[0]])
+          : winProb;
         await set(logRef,{
           partida:n,pairKey,jugador:pid,rival,
           nickname_jugador:r?.players?.[pid]?.nickname||pid,
@@ -1345,7 +1373,8 @@ function GestorScreen({ roomCode }) {
           pub_visible_2:ronda>=3?pdC.publicos?.[1]||null:null,
           pub_revelados:ronda-1,
           score_parcial:top3score(myDice,pub).score,
-          win_prob:parseFloat(estimateWinProb(myDice,pub).toFixed(3)),
+          win_prob:parseFloat(winProb.toFixed(3)),
+          win_prob_cheat:parseFloat(winProbCheat.toFixed(3)),
           tiempo_decision_ms:tiempo,
           resultado:null,ts:Date.now(),
         });
@@ -1453,7 +1482,7 @@ function GestorScreen({ roomCode }) {
       "estado_partida","condicion_jugador",
       "dado_priv_1","dado_priv_2","pub_1","pub_2",
       "pub_visible_1","pub_visible_2","pub_revelados",
-      "score_parcial","win_prob","ev",
+      "score_parcial","win_prob","win_prob_cheat","ev",
       "decision","tiempo_decision_ms",
     ];
 
@@ -1477,6 +1506,7 @@ function GestorScreen({ roomCode }) {
         l.pub_revelados ?? ronda - 1,
         l.score_parcial ?? "",
         l.win_prob      ?? "",
+        l.win_prob_cheat ?? "",
         ((l.ev || 0) * 100).toFixed(1),
         l.accion,
         l.tiempo_decision_ms ?? l.tiempo_ms ?? "",
@@ -1967,7 +1997,9 @@ function GestorScreen({ roomCode }) {
         const jugadas  = phase==="finished" ? pActual : Math.max(0, pActual - 1);
         const faltantes= Math.max(0, totalP - jugadas);
         const humanCount = allPlayers.filter(([,p])=>!p.isBot).length;
+        const botCount   = allPlayers.length - humanCount;
         const fichasTotal= allPlayers.reduce((acc,[uid])=>acc+(balance?.[uid]??10), 0);
+        const fichasCasa = (humanCount + botCount) * 10 - fichasTotal;
 
         // ── stats por jugador (de logs de resultado) ───────────────────────────
         const sm = {};
@@ -1983,18 +2015,19 @@ function GestorScreen({ roomCode }) {
           const [pA,pB] = pd.jugadores||[];
           if (!pA||!pB) return;
 
+          [pA,pB].forEach(uid=>{ if(sm[uid]) sm[uid].played++; });
+
           if (gCasa) {
-            [pA,pB].forEach(uid=>{ if(sm[uid]){ sm[uid].casa++; sm[uid].played++; } });
+            [pA,pB].forEach(uid=>{ if(sm[uid]) sm[uid].casa++; });
           } else {
             const perdedor = ganador===pA ? pB : pA;
             if (sm[ganador]) {
               sm[ganador].wins++;
-              sm[ganador].played++;
               const condGan = pd.condicion?.[ganador]||"limpio";
               if (condGan==="tramposo") sm[ganador].wTrampa++;
               else                      sm[ganador].wLimpio++;
             }
-            if (sm[perdedor]) { sm[perdedor].losses++; sm[perdedor].played++; }
+            if (sm[perdedor]) sm[perdedor].losses++;
           }
         });
 
@@ -2026,6 +2059,7 @@ function GestorScreen({ roomCode }) {
                 {label:"Faltantes",         val:faltantes,  color:"#ef4444"},
                 {label:"Jugadores humanos", val:humanCount, color:"#3b82f6"},
                 {label:"Fichas en juego",   val:fichasTotal,color:"#f97316"},
+                {label:"Fichas de la casa", val:fichasCasa, color:"#a855f7"},
               ].map(({label,val,color})=>(
                 <div key={label} style={{background:"#12121e",borderRadius:12,padding:"14px 16px",
                   border:`1px solid ${color}22`,textAlign:"center"}}>
@@ -2245,7 +2279,11 @@ function GestorScreen({ roomCode }) {
               const K      = config?.K || 5;
               const totalP = config?.totalPartidas || 0;
               const doneByCond = {limpio:0, A_trampa:0, B_trampa:0, ambos_trampa:0};
+              const seenPairs  = new Set();
               resLogs.forEach(l=>{
+                const pairKey = `${l.partida}_${l.pairKey}`;
+                if (seenPairs.has(pairKey)) return;
+                seenPairs.add(pairKey);
                 const est = l.estado_partida||"limpio";
                 if (doneByCond[est]!==undefined) doneByCond[est]++;
               });
@@ -2704,6 +2742,11 @@ function PlayerScreen({ roomCode, playerId, profile, onLeave }) {
     await update(ref(db,`rooms/${roomCode}/partidas/${n}/${pairKey}/decisiones`),{[decKey]:accion});
 
     const logRef = push(ref(db,`rooms/${roomCode}/logs`));
+    const esTramposo   = pd.condicion?.[playerId] === "tramposo";
+    const winProb      = estimateWinProb(myDice, pubVis);
+    const winProbCheat = esTramposo
+      ? estimateWinProb(myDice, pubVis, 600, [pd.dados?.[rival]?.[0]])
+      : winProb;
     await set(logRef,{
       partida:n,pairKey,jugador:playerId,rival,
       nickname_jugador:profile?.nickname||"",
@@ -2719,7 +2762,8 @@ function PlayerScreen({ roomCode, playerId, profile, onLeave }) {
       pub_visible_2:ronda>=3?pd.publicos?.[1]||null:null,
       pub_revelados:ronda-1,
       score_parcial:top3score(myDice,pubVis).score,
-      win_prob:parseFloat(estimateWinProb(myDice,pubVis).toFixed(3)),
+      win_prob:parseFloat(winProb.toFixed(3)),
+      win_prob_cheat:parseFloat(winProbCheat.toFixed(3)),
       tiempo_decision_ms:tiempo,
       resultado:null,ts:Date.now(),
     });
