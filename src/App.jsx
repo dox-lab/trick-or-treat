@@ -2082,6 +2082,15 @@ function GestorScreen({ roomCode }) {
                             const isJugA  = pid===pA;
                             const score   = isJugA ? d.scoreA : d.scoreB;
                             const best3   = isJugA ? d.best3A : d.best3B;
+                            const rivalId = isJugA ? pB : pA;
+                            const privados    = d.dados?.[pid] || [];
+                            // El tramposo ve SIEMPRE el primer dado privado del rival (índice 0).
+                            // Por tanto, si el RIVAL de este jugador es tramposo, el dado [0]
+                            // de ESTE jugador está siendo espiado.
+                            const rivalCond   = d.condicion?.[rivalId]||"limpio";
+                            const soyEspiado  = rivalCond==="tramposo";
+                            const yoTramposo  = cond==="tramposo";
+                            const dadoQueVeo  = yoTramposo ? (d.dados?.[rivalId]?.[0]) : null;
                             return (
                               <div key={pid} style={{background:"#0a0a0f",borderRadius:10,padding:"8px 10px",
                                 border:`1px solid ${pl.color}22`}}>
@@ -2097,6 +2106,29 @@ function GestorScreen({ roomCode }) {
                                   {cond==="tramposo"&&<span style={{fontSize:9,background:"#eab30822",color:"#eab308",
                                     padding:"1px 5px",borderRadius:4,fontWeight:700}}>👁 trampa</span>}
                                 </div>
+                                {/* Dados privados del jugador */}
+                                <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}>
+                                  <span style={{fontSize:10,color:"#555",flexShrink:0}}>Privados:</span>
+                                  {privados.map((v,i)=>(
+                                    <div key={i} style={{position:"relative"}}>
+                                      <Die value={v} size={26} color={pl.color}
+                                        hidden={false}
+                                        selected={soyEspiado && i===0}/>
+                                    </div>
+                                  ))}
+                                  {soyEspiado && (
+                                    <span title="El rival tramposo ve este dado"
+                                      style={{fontSize:12,color:"#eab308"}}>👁</span>
+                                  )}
+                                </div>
+                                {/* Qué dado del rival ve, si es tramposo */}
+                                {yoTramposo && dadoQueVeo!=null && (
+                                  <div style={{fontSize:10,color:"#eab308",marginBottom:6,
+                                    display:"flex",alignItems:"center",gap:5}}>
+                                    <span>Ve del rival:</span>
+                                    <Die value={dadoQueVeo} size={20} color="#eab308" glow/>
+                                  </div>
+                                )}
                                 {/* Decisión ronda actual */}
                                 {!ended&&ronda<=3&&(
                                   <div style={{fontSize:12,fontWeight:700,marginBottom:4,
