@@ -349,6 +349,7 @@ function schedCreate(playerIds, K) {
 // Añade un jugador nuevo: genera sus pares contra todos los existentes.
 // `arrivalTs` registra el orden de llegada (para controlar confusor temporal).
 function schedAddPlayer(sched, newId, arrivalTs) {
+  schedNormalize(sched);
   if (sched.players.includes(newId)) return sched;
   const K = sched.K;
   sched.players.forEach(ex => {
@@ -364,18 +365,39 @@ function schedAddPlayer(sched, newId, arrivalTs) {
   return sched;
 }
 
+// ── Robustez ante Firebase ──────────────────────────────────────────────────
+// Firebase Realtime Database OMITE los arrays vacíos al guardar (los lee como
+// undefined). Por eso normalizamos: cualquier pending/done ausente = []. Sin
+// esto, un par con done:[] o pending:[] tras un round-trip rompe .length.
+const _arr = v => Array.isArray(v) ? v : [];
+
+// Repara un scheduler recién leído de Firebase: garantiza pending/done arrays
+// y players array. Idempotente. Llamar SIEMPRE tras leer sched de la DB.
+function schedNormalize(sched) {
+  if (!sched) return sched;
+  sched.players = _arr(sched.players);
+  sched.arrivals = sched.arrivals || {};
+  const pairs = sched.pairs || {};
+  Object.values(pairs).forEach(pr => {
+    pr.pending = _arr(pr.pending);
+    pr.done    = _arr(pr.done);
+  });
+  sched.pairs = pairs;
+  return sched;
+}
+
 // Déficit = partidas pendientes por jugador (para priorizar a los atrasados).
 function schedDeficits(sched) {
-  const d = {}; sched.players.forEach(p => d[p] = 0);
-  Object.values(sched.pairs).forEach(pr => {
-    d[pr.pA] += pr.pending.length;
-    d[pr.pB] += pr.pending.length;
+  const d = {}; _arr(sched.players).forEach(p => d[p] = 0);
+  Object.values(sched.pairs || {}).forEach(pr => {
+    d[pr.pA] = (d[pr.pA] || 0) + _arr(pr.pending).length;
+    d[pr.pB] = (d[pr.pB] || 0) + _arr(pr.pending).length;
   });
   return d;
 }
 
 function schedTotalPending(sched) {
-  return Object.values(sched.pairs).reduce((a, pr) => a + pr.pending.length, 0);
+  return Object.values(sched.pairs || {}).reduce((a, pr) => a + _arr(pr.pending).length, 0);
 }
 
 // Emparejamiento voraz por déficit: devuelve las partidas a jugar EN PARALELO
@@ -384,24 +406,27 @@ function schedNextBatch(sched) {
   const busy = new Set();
   const batch = [];
   const def = schedDeficits(sched);
-  const cand = Object.entries(sched.pairs)
-    .filter(([, pr]) => pr.pending.length > 0)
+  const cand = Object.entries(sched.pairs || {})
+    .filter(([, pr]) => _arr(pr.pending).length > 0)
     .sort(([, a], [, b]) =>
       (def[b.pA] + def[b.pB]) - (def[a.pA] + def[a.pB]) ||
-      b.pending.length - a.pending.length
+      _arr(b.pending).length - _arr(a.pending).length
     );
   for (const [key, pr] of cand) {
     if (busy.has(pr.pA) || busy.has(pr.pB)) continue;
     busy.add(pr.pA); busy.add(pr.pB);
-    batch.push({ key, pA: pr.pA, pB: pr.pB, estado: pr.pending[0] });
+    batch.push({ key, pA: pr.pA, pB: pr.pB, estado: _arr(pr.pending)[0] });
   }
   return batch;
 }
 
 // Consume una condición de la cola de un par (marca la partida como jugada).
 function schedCommit(sched, key) {
-  const pr = sched.pairs[key];
-  if (!pr || !pr.pending.length) return null;
+  const pr = sched.pairs?.[key];
+  if (!pr) return null;
+  pr.pending = _arr(pr.pending);
+  pr.done    = _arr(pr.done);
+  if (!pr.pending.length) return null;
   const cond = pr.pending.shift();
   pr.done.push(cond);
   return cond;
@@ -412,13 +437,13 @@ function schedWaiting(sched, batch) {
   const inGame = new Set();
   batch.forEach(m => { inGame.add(m.pA); inGame.add(m.pB); });
   const def = schedDeficits(sched);
-  return sched.players.filter(p => !inGame.has(p) && def[p] > 0);
+  return _arr(sched.players).filter(p => !inGame.has(p) && def[p] > 0);
 }
 
 function schedTotalGames(sched) {
   // partidas totales del experimento = jugadas + pendientes
   let done = 0, pend = 0;
-  Object.values(sched.pairs).forEach(pr => { done += pr.done.length; pend += pr.pending.length; });
+  Object.values(sched.pairs || {}).forEach(pr => { done += _arr(pr.done).length; pend += _arr(pr.pending).length; });
   return { done, pending: pend, total: done + pend };
 }
 
@@ -1719,7 +1744,7 @@ function GestorScreen({ roomCode, mode="gestor" }) {
 
       if (r.config?.dynamicScheduler) {
         // ── MOTOR DINÁMICO ──
-        let sched = r.scheduler;
+        let sched = schedNormalize(r.scheduler);   // reparar arrays omitidos por Firebase
         if (!sched) { await update(ref(db,`rooms/${roomCode}/status`),{phase:"finished"}); return; }
 
         // Incorporar jugadores que se unieron en caliente (entre batches).
@@ -1778,7 +1803,7 @@ function GestorScreen({ roomCode, mode="gestor" }) {
     (async ()=>{
       const snap = await get(ref(db,`rooms/${roomCode}`));
       const r = snap.val();
-      let sched = r.scheduler;
+      let sched = schedNormalize(r.scheduler);
       if (!sched) { reactivateRef.current=false; return; }
       const pj = r.pendingJoins || {};
       const toAdd = Object.keys(pj).filter(uid => !sched.players.includes(uid) && r.players?.[uid]);
@@ -1958,6 +1983,7 @@ function GestorScreen({ roomCode, mode="gestor" }) {
   // del par, así que estadoPartida queda SIEMPRE canónico (sin ambigüedad de
   // perspectiva) y la condición se deriva con el isPlayerA real.
   const launchBatchDynamic = async (numTurno, sched, r) => {
+    schedNormalize(sched);
     const batch = schedNextBatch(sched);
     if (!batch.length) {
       // no quedan partidas: fin del experimento
@@ -2495,7 +2521,7 @@ function GestorScreen({ roomCode, mode="gestor" }) {
                 if (players?.[uid]?.isBot) return false;
                 // tiene pendientes?
                 let pend=0;
-                Object.values(sched.pairs||{}).forEach(pr=>{ if(pr.pA===uid||pr.pB===uid) pend+=pr.pending.length; });
+                Object.values(sched.pairs||{}).forEach(pr=>{ if(pr.pA===uid||pr.pB===uid) pend+=(Array.isArray(pr.pending)?pr.pending.length:0); });
                 return pend>0;
               });
               const recienLlegados = Object.keys(pendingJoins).filter(uid=>players?.[uid]&&!players[uid].isBot);
@@ -3896,8 +3922,9 @@ function PlayerScreen({ roomCode, playerId, profile, onLeave }) {
     let misPendientes = 0, totalPend = 0, jugadoresActivos = 0;
     if (sched?.pairs) {
       Object.values(sched.pairs).forEach(pr=>{
-        totalPend += pr.pending.length;
-        if (pr.pA===playerId || pr.pB===playerId) misPendientes += pr.pending.length;
+        const pend = Array.isArray(pr.pending) ? pr.pending.length : 0;
+        totalPend += pend;
+        if (pr.pA===playerId || pr.pB===playerId) misPendientes += pend;
       });
       jugadoresActivos = sched.players?.length || 0;
     }
