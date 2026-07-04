@@ -304,6 +304,124 @@ function deriveCondicion(estadoPartida, isPlayerA) {
   return "limpio";
 }
 
+// ─── SCHEDULER DINÁMICO (Fase 1: definido, aún no conectado al motor) ─────────
+// Modelo serializable para Firebase. En vez de precalcular columnas fijas,
+// mantiene por cada par una COLA de condiciones pendientes (barajadas) y decide
+// los emparejamientos en tiempo real. Esto permite:
+//   • entrada de jugadores a mitad de experimento (rebalanceo automático)
+//   • máxima paralelización priorizando a quien va más atrasado (menor espera)
+// Es un superconjunto del scheduler estático: sin entradas produce el MISMO
+// resultado (validado). Todas las funciones son PURAS y operan sobre un objeto
+// `sched` = { pairs: { "a_b": {pA,pB,pending:[cond...],done:[cond...]} },
+//             players:[...], K, arrivals:{uid:ts} }.
+
+const SCHED_CONDS = ["limpio", "A_trampa", "B_trampa", "ambos_trampa"];
+
+// Máximo de jugadores que pueden UNIRSE una vez iniciado el experimento.
+const MAX_JUGADORES_ADICIONALES = 4;
+
+function _shuffleInPlace(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+// Crea el estado inicial del scheduler para un conjunto de jugadores.
+function schedCreate(playerIds, K) {
+  const pairs = {};
+  const addPair = (x, y) => {
+    const [pA, pB] = [x, y].sort();
+    const key = `${pA}_${pB}`;
+    if (pairs[key]) return;
+    const slots = _shuffleInPlace(SCHED_CONDS.flatMap(c => Array(K).fill(c)));
+    pairs[key] = { pA, pB, pending: slots, done: [] };
+  };
+  for (let i = 0; i < playerIds.length; i++)
+    for (let j = i + 1; j < playerIds.length; j++)
+      addPair(playerIds[i], playerIds[j]);
+  const arrivals = {};
+  playerIds.forEach(p => { arrivals[p] = 0; });   // orden de llegada (0 = inicial)
+  return { pairs, players: [...playerIds], K, arrivals };
+}
+
+// Añade un jugador nuevo: genera sus pares contra todos los existentes.
+// `arrivalTs` registra el orden de llegada (para controlar confusor temporal).
+function schedAddPlayer(sched, newId, arrivalTs) {
+  if (sched.players.includes(newId)) return sched;
+  const K = sched.K;
+  sched.players.forEach(ex => {
+    const [pA, pB] = [newId, ex].sort();
+    const key = `${pA}_${pB}`;
+    if (sched.pairs[key]) return;
+    const slots = _shuffleInPlace(SCHED_CONDS.flatMap(c => Array(K).fill(c)));
+    sched.pairs[key] = { pA, pB, pending: slots, done: [] };
+  });
+  sched.players.push(newId);
+  sched.arrivals = sched.arrivals || {};
+  sched.arrivals[newId] = arrivalTs ?? Date.now();
+  return sched;
+}
+
+// Déficit = partidas pendientes por jugador (para priorizar a los atrasados).
+function schedDeficits(sched) {
+  const d = {}; sched.players.forEach(p => d[p] = 0);
+  Object.values(sched.pairs).forEach(pr => {
+    d[pr.pA] += pr.pending.length;
+    d[pr.pB] += pr.pending.length;
+  });
+  return d;
+}
+
+function schedTotalPending(sched) {
+  return Object.values(sched.pairs).reduce((a, pr) => a + pr.pending.length, 0);
+}
+
+// Emparejamiento voraz por déficit: devuelve las partidas a jugar EN PARALELO
+// en el siguiente turno. Cada jugador aparece a lo más una vez.
+function schedNextBatch(sched) {
+  const busy = new Set();
+  const batch = [];
+  const def = schedDeficits(sched);
+  const cand = Object.entries(sched.pairs)
+    .filter(([, pr]) => pr.pending.length > 0)
+    .sort(([, a], [, b]) =>
+      (def[b.pA] + def[b.pB]) - (def[a.pA] + def[a.pB]) ||
+      b.pending.length - a.pending.length
+    );
+  for (const [key, pr] of cand) {
+    if (busy.has(pr.pA) || busy.has(pr.pB)) continue;
+    busy.add(pr.pA); busy.add(pr.pB);
+    batch.push({ key, pA: pr.pA, pB: pr.pB, estado: pr.pending[0] });
+  }
+  return batch;
+}
+
+// Consume una condición de la cola de un par (marca la partida como jugada).
+function schedCommit(sched, key) {
+  const pr = sched.pairs[key];
+  if (!pr || !pr.pending.length) return null;
+  const cond = pr.pending.shift();
+  pr.done.push(cond);
+  return cond;
+}
+
+// Jugadores que este turno quedan sin emparejar pero aún tienen pendientes.
+function schedWaiting(sched, batch) {
+  const inGame = new Set();
+  batch.forEach(m => { inGame.add(m.pA); inGame.add(m.pB); });
+  const def = schedDeficits(sched);
+  return sched.players.filter(p => !inGame.has(p) && def[p] > 0);
+}
+
+function schedTotalGames(sched) {
+  // partidas totales del experimento = jugadas + pendientes
+  let done = 0, pend = 0;
+  Object.values(sched.pairs).forEach(pr => { done += pr.done.length; pend += pr.pending.length; });
+  return { done, pending: pend, total: done + pend };
+}
+
 function buildMatchStateSchedule(totalPartidas, cfg) {
   const pool = [
     ...Array(cfg.limpio       ||0).fill("limpio"),
@@ -807,6 +925,17 @@ function CreateRoomScreen({ onCreated }) {
           Con {numJugadores} jugadores cada uno enfrenta {numJugadores-1} rival{numJugadores-1!==1?"es":""} distinto{numJugadores-1!==1?"s":""}.
           Se necesitan ≥30 obs por condición para detectar diferencias sobre el azar.
           K={kMin} garantiza {kMin*(numJugadores-1)} obs por condición por jugador.
+        </div>
+
+        {/* Anuncio de capacidad de jugadores */}
+        <div style={{background:"#0f0f1a",borderRadius:10,padding:"10px 12px",marginTop:10,
+          border:"1px solid #3b82f633",fontSize:11,color:"#777",lineHeight:1.6}}>
+          <span style={{color:"#3b82f6",fontWeight:700}}>👥 Capacidad de la sala:</span>{" "}
+          empiezas con <b style={{color:"#f97316"}}>{numJugadores}</b> jugadores.
+          Se pueden unir hasta <b style={{color:"#3b82f6"}}>{MAX_JUGADORES_ADICIONALES}</b> jugadores
+          más ya iniciado el experimento (máximo <b style={{color:"#22c55e"}}>{numJugadores+MAX_JUGADORES_ADICIONALES}</b> en total).
+          Al unirse alguien nuevo, todos pasan a jugar {"(N-1)·4K"} partidas y el diseño
+          se rebalancea automáticamente para que todos jueguen contra todos en las mismas condiciones.
         </div>
       </Card>
 
