@@ -2585,7 +2585,11 @@ function GestorScreen({ roomCode }) {
             {/* SECCIÓN 5 — Progreso del experimento */}
             {(()=>{
               const K      = config?.K || 5;
-              const totalP = config?.totalPartidas || 0;
+              // Escala POR-SALA (coherente con el resto del panel):
+              // total enfrentamientos = C(N,2)*4K; por estado = C(N,2)*K.
+              const nPares       = nJugadores>1 ? (nJugadores*(nJugadores-1))/2 : 0;
+              const porEstadoTot = nPares * K;            // p.ej. 4 jug, K=10 → 60
+              const totalEnfr    = porEstadoTot * 4;      // = totalReal (240)
               const doneByCond = {limpio:0, A_trampa:0, B_trampa:0, ambos_trampa:0};
               const seenPairs  = new Set();
               resLogs.forEach(l=>{
@@ -2601,14 +2605,15 @@ function GestorScreen({ roomCode }) {
                 {key:"B_trampa",     label:"👁 B trampa",    color:"#3b82f6"},
                 {key:"ambos_trampa", label:"⚔️ Ambos trampa",color:"#a855f7"},
               ];
-              const progPct = totalP>0 ? Math.min(100, Math.round((jugadas/totalP)*100)) : 0;
+              const doneTotal = jugadasReal;              // partidas realmente resueltas (deduplic.)
+              const progPct = totalEnfr>0 ? Math.min(100, Math.round((doneTotal/totalEnfr)*100)) : 0;
               return (
                 <Card accent="#22c55e">
                   <div style={{fontSize:11,color:"#555",fontWeight:700,marginBottom:12,letterSpacing:1}}>
                     PROGRESO DEL EXPERIMENTO
                   </div>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
-                    <span style={{fontSize:12,color:"#aaa"}}>{jugadas} de {totalP} partidas completadas</span>
+                    <span style={{fontSize:12,color:"#aaa"}}>{doneTotal} de {totalEnfr} partidas completadas</span>
                     <span style={{fontSize:13,fontWeight:900,color:"#22c55e"}}>{progPct}%</span>
                   </div>
                   <div style={{background:"#1e1e2e",borderRadius:6,height:10,marginBottom:16}}>
@@ -2618,14 +2623,14 @@ function GestorScreen({ roomCode }) {
                   <div style={{display:"flex",flexDirection:"column",gap:8}}>
                     {COND_ROWS.map(({key,label,color})=>{
                       const done   = doneByCond[key]||0;
-                      const rowPct = K>0 ? Math.min(100,Math.round((done/K)*100)) : 0;
+                      const rowPct = porEstadoTot>0 ? Math.min(100,Math.round((done/porEstadoTot)*100)) : 0;
                       return (
                         <div key={key}>
                           <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
                             <span style={{fontSize:11,color,fontWeight:700,minWidth:100}}>{label}</span>
                             <span style={{fontSize:11,color:"#aaa",minWidth:32,textAlign:"right"}}>{done}</span>
                             <span style={{fontSize:11,color:"#444"}}>/</span>
-                            <span style={{fontSize:11,color:"#555",minWidth:20}}>{K}</span>
+                            <span style={{fontSize:11,color:"#555",minWidth:24}}>{porEstadoTot}</span>
                             <div style={{flex:1,background:"#1e1e2e",borderRadius:4,height:7}}>
                               <div style={{width:`${rowPct}%`,background:color,borderRadius:4,
                                 height:"100%",transition:"width 0.5s",opacity:0.8}}/>
