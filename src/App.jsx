@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { initializeApp } from "firebase/app";
-import { getDatabase, ref, set, get, onValue, off, update, push, onDisconnect } from "firebase/database";
+import { getDatabase, ref, set, get, onValue, off, update, push, onDisconnect, runTransaction } from "firebase/database";
 
 // ─── FIREBASE CONFIG ─────────────────────────────────────────────────────────
 const firebaseConfig = {
@@ -1084,6 +1084,13 @@ async function resolveRondaDB(roomCode, room, n, pairKey, pd, ronda, pidA, decA,
 }
 
 async function finalizarPartidaDB(roomCode, room, n, pairKey, pd, ganador, motivo) {
+  // Idempotencia: solo el primer llamador que consiga poner finalizado=true
+  // paga el pot y loguea. Evita doble pago/doble log ante llamadas
+  // concurrentes de los 3 watchers (resolveWatchRef, scheduleBotDecisions, decidir).
+  const finalizadoRef = ref(db, `rooms/${roomCode}/partidas/${n}/${pairKey}/finalizado`);
+  const tx = await runTransaction(finalizadoRef, curr => curr === true ? undefined : true);
+  if (!tx.committed) return; // otro llamador ya finalizó esta partida
+
   const [p1,p2] = pd.jugadores||[];
   const pot      = pd.pot||2;
   let b1=room.balance?.[p1]??10, b2=room.balance?.[p2]??10;
@@ -1520,8 +1527,10 @@ function GestorScreen({ roomCode }) {
     const pl  = room?.players || {};
     const pts = room?.partidas || {};
 
-    const resLogs = Object.values(room?.logs || {})
-      .filter(l => l.accion === "resultado")
+    const resLogsAll = Object.values(room?.logs || {}).filter(l => l.accion === "resultado");
+    const resLogMap  = {};
+    resLogsAll.forEach(l=>{ resLogMap[`${l.partida}_${l.pairKey}`] = l; });
+    const resLogs = Object.values(resLogMap)
       .sort((a,b) => (a.partida - b.partida) || (a.pairKey || "").localeCompare(b.pairKey || ""));
 
     const cols = [
@@ -1991,15 +2000,26 @@ function GestorScreen({ roomCode }) {
       {/* ── STATS ── */}
       {tab==="stats"&&(()=>{
         const totalP   = config?.totalPartidas || 0;
-        const resLogs  = Object.values(room?.logs||{}).filter(l => l.accion==="resultado");
+        const resLogsAll = Object.values(room?.logs||{}).filter(l => l.accion==="resultado");
+        const resLogMap  = {};
+        resLogsAll.forEach(l=>{ resLogMap[`${l.partida}_${l.pairKey}`] = l; });
+        const resLogs    = Object.values(resLogMap); // 1 log por (partida,pairKey)
 
         // ── métricas globales ──────────────────────────────────────────────────
         const jugadas  = phase==="finished" ? pActual : Math.max(0, pActual - 1);
-        const faltantes= Math.max(0, totalP - jugadas);
         const humanCount = allPlayers.filter(([,p])=>!p.isBot).length;
         const botCount   = allPlayers.length - humanCount;
         const fichasTotal= allPlayers.reduce((acc,[uid])=>acc+(balance?.[uid]??10), 0);
         const fichasCasa = (humanCount + botCount) * 10 - fichasTotal;
+
+        // Enfrentamientos ÚNICOS totales en la sala (no por jugador): C(N,2)*4K.
+        // totalP (arriba) es por-jugador; cada enfrentamiento involucra a 2
+        // jugadores, de ahí el /2. jugadasReal cuenta partidas distintas ya
+        // resueltas (resLogs ya viene deduplicado por partida_pairKey).
+        const nJugadores    = allPlayers.length;
+        const totalReal     = nJugadores > 1 ? Math.round(totalP * nJugadores / 2) : 0;
+        const jugadasReal   = resLogs.length;
+        const faltantesReal = Math.max(0, totalReal - jugadasReal);
 
         // ── stats por jugador (de logs de resultado) ───────────────────────────
         const sm = {};
@@ -2055,16 +2075,18 @@ function GestorScreen({ roomCode }) {
             {/* SECCIÓN 1 — métricas globales */}
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
               {[
-                {label:"Partidas jugadas",  val:jugadas,    color:"#22c55e"},
-                {label:"Faltantes",         val:faltantes,  color:"#ef4444"},
-                {label:"Jugadores humanos", val:humanCount, color:"#3b82f6"},
-                {label:"Fichas en juego",   val:fichasTotal,color:"#f97316"},
-                {label:"Fichas de la casa", val:fichasCasa, color:"#a855f7"},
-              ].map(({label,val,color})=>(
+                {label:"Enfrentamientos",   val:jugadasReal,   color:"#22c55e",
+                  sub:`${totalReal} total · ${totalP} por jugador`},
+                {label:"Faltantes",         val:faltantesReal, color:"#ef4444"},
+                {label:"Fichas en juego",   val:fichasTotal,   color:"#f97316"},
+                {label:"Fichas de la casa", val:fichasCasa,    color:"#a855f7", full:true},
+              ].map(({label,val,color,sub,full})=>(
                 <div key={label} style={{background:"#12121e",borderRadius:12,padding:"14px 16px",
-                  border:`1px solid ${color}22`,textAlign:"center"}}>
+                  border:`1px solid ${color}22`,textAlign:"center",
+                  ...(full?{gridColumn:"1 / -1"}:{})}}>
                   <div style={{fontSize:28,fontWeight:900,color}}>{val}</div>
                   <div style={{fontSize:11,color:"#555",marginTop:4}}>{label}</div>
+                  {sub&&<div style={{fontSize:10,color:"#444",marginTop:2}}>{sub}</div>}
                 </div>
               ))}
             </div>
