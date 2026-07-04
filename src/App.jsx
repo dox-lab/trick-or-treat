@@ -1128,6 +1128,39 @@ async function finalizarPartidaDB(roomCode, room, n, pairKey, pd, ganador, motiv
   });
 }
 
+// ─── ESTADÍSTICA: Wilson score interval + test binomial dos colas ───────────
+// IC 95% (z=1.96) para una proporción, más robusto que el IC normal ingenuo
+// cuando n es chico o p está cerca de 0/1.
+function wilsonInterval(k, n, z = 1.96) {
+  if (!n) return { p: null, lo: null, hi: null };
+  const phat   = k / n;
+  const denom  = 1 + (z * z) / n;
+  const centre = (phat + (z * z) / (2 * n)) / denom;
+  const margin = (z * Math.sqrt((phat * (1 - phat)) / n + (z * z) / (4 * n * n))) / denom;
+  return { p: phat, lo: Math.max(0, centre - margin), hi: Math.min(1, centre + margin) };
+}
+
+function normalCDF(z) {
+  const sign = z < 0 ? -1 : 1;
+  const x = Math.abs(z) / Math.SQRT2;
+  const a1=0.254829592, a2=-0.284496736, a3=1.421413741, a4=-1.453152027, a5=1.061405429, p=0.3275911;
+  const t = 1 / (1 + p * x);
+  const erf = 1 - (((((a5*t+a4)*t)+a3)*t+a2)*t+a1) * t * Math.exp(-x*x);
+  return 0.5 * (1 + sign * erf);
+}
+
+// Test binomial exacto bilateral H0: P=p0, aproximado con la normal y
+// corrección de continuidad de 0.5 (método estándar cuando n*p0*(1-p0) no es
+// minúsculo; con N muy pequeño el p-valor es solo orientativo).
+function binomTestTwoSided(k, n, p0 = 0.5) {
+  if (!n) return null;
+  const mean = n * p0;
+  const sd   = Math.sqrt(n * p0 * (1 - p0));
+  if (sd === 0) return null;
+  const z = (Math.abs(k - mean) - 0.5) / sd;
+  return Math.min(1, Math.max(0, 2 * (1 - normalCDF(Math.max(0, z)))));
+}
+
 // ─── GESTOR SCREEN ────────────────────────────────────────────────────────────
 function GestorScreen({ roomCode }) {
   const [room,       setRoom]      = useState(null);
@@ -2149,91 +2182,212 @@ function GestorScreen({ roomCode }) {
               </div>
             </Card>
 
-            {/* SECCIÓN 3 — Evidencia de ventaja por trampa */}
+            {/* SECCIÓN 3 — Evidencia de ventaja por trampa: estimador + controles */}
             {(()=>{
-              const SITS = [
-                {id:"limpio",       label:"🎯 Limpio",       color:"#aaa"},
-                {id:"yo_trampo",    label:"🃏 Yo trampo",    color:"#eab308"},
-                {id:"rival_trampa", label:"👁 Rival trampa", color:"#ef4444"},
-                {id:"ambos_trampa", label:"⚔️ Ambos trampa", color:"#a855f7"},
-              ];
-              const byS = {};
-              SITS.forEach(s=>{ byS[s.id]={wins:0,losses:0}; });
+              const asim = { n:0, winsTramposo:0, pos:{ A:{wins:0,n:0}, B:{wins:0,n:0} } };
+              const ctrl = { limpio:{winsA:0,n:0}, ambos_trampa:{winsA:0,n:0} };
+              const ties = {
+                limpio:{ties:0,total:0}, asimetrico:{ties:0,total:0}, ambos_trampa:{ties:0,total:0},
+              };
 
               resLogs.forEach(l=>{
                 const pd      = partidas?.[l.partida]?.[l.pairKey]||{};
                 const [pA,pB] = pd.jugadores||[];
                 if (!pA||!pB) return;
+                const estado  = pd.estadoPartida||"limpio";
                 const gCasa   = l.jugador==="casa";
-                [pA,pB].forEach(uid=>{
-                  const rival = uid===pA?pB:pA;
-                  const cJ    = pd.condicion?.[uid]||"limpio";
-                  const cR    = pd.condicion?.[rival]||"limpio";
-                  const sit   = cJ==="tramposo"&&cR==="tramposo" ? "ambos_trampa"
-                              : cJ==="tramposo"                   ? "yo_trampo"
-                              : cR==="tramposo"                   ? "rival_trampa"
-                              : "limpio";
-                  if (!byS[sit]) return;
-                  if (!gCasa && l.jugador===uid) byS[sit].wins++;
-                  else if (!gCasa)               byS[sit].losses++;
-                });
+                const grupo   = estado==="limpio" ? "limpio"
+                              : estado==="ambos_trampa" ? "ambos_trampa" : "asimetrico";
+
+                ties[grupo].total++;
+                if (gCasa) { ties[grupo].ties++; return; } // empates: solo contexto (Bloque C)
+
+                if (grupo==="asimetrico") {
+                  const tramposoUid  = estado==="A_trampa" ? pA : pB;
+                  const ganoTramposo = l.jugador===tramposoUid;
+                  const pos          = estado==="A_trampa" ? "A" : "B";
+                  asim.n++; asim.pos[pos].n++;
+                  if (ganoTramposo) { asim.winsTramposo++; asim.pos[pos].wins++; }
+                } else {
+                  const bucket = ctrl[grupo];
+                  bucket.n++;
+                  if (l.jugador===pA) bucket.winsA++;
+                }
               });
 
-              const K       = config?.K || 5;
-              const limpio  = byS.limpio;
-              const wrL     = (limpio.wins+limpio.losses)>0
-                ? limpio.wins/(limpio.wins+limpio.losses) : null;
+              // ── BLOQUE A: estimador del efecto ──────────────────────────────────
+              const wrTramposo  = asim.n>0 ? asim.winsTramposo/asim.n : null;
+              const deltaHat    = wrTramposo!=null ? wrTramposo-0.5 : null;
+              const ciEfecto    = wilsonInterval(asim.winsTramposo, asim.n);
+              const pValEfecto  = binomTestTwoSided(asim.winsTramposo, asim.n, 0.5);
+              const wrPosA      = asim.pos.A.n>0 ? asim.pos.A.wins/asim.pos.A.n : null;
+              const wrPosB      = asim.pos.B.n>0 ? asim.pos.B.wins/asim.pos.B.n : null;
+              const deltaCorregido = (wrPosA!=null&&wrPosB!=null) ? ((wrPosA+wrPosB)/2)-0.5 : null;
+              const veredicto = pValEfecto==null ? "Datos insuficientes"
+                : pValEfecto<0.05 && deltaHat>0 ? "Ventaja significativa"
+                : pValEfecto<0.05 && deltaHat<0 ? "Desventaja significativa"
+                : "Sin evidencia";
+              const veredictoColor = veredicto==="Ventaja significativa" ? "#22c55e"
+                : veredicto==="Desventaja significativa" ? "#ef4444" : "#aaa";
+
+              // ── BLOQUE B: controles ─────────────────────────────────────────────
+              const ciLimpio = wilsonInterval(ctrl.limpio.winsA, ctrl.limpio.n);
+              const ciAmbos  = wilsonInterval(ctrl.ambos_trampa.winsA, ctrl.ambos_trampa.n);
+              const sesgoCheck = ci => ci.p==null ? null : (ci.lo<=0.5 && ci.hi>=0.5)
+                ? "✓ sin sesgo posicional" : "⚠ posible ventaja posicional";
+              const sesgoLimpio = sesgoCheck(ciLimpio);
+              const sesgoAmbos  = sesgoCheck(ciAmbos);
+              const controlesCoinciden = (ciLimpio.p!=null && ciAmbos.p!=null)
+                ? Math.abs(ciLimpio.p-ciAmbos.p) < 0.10 : null;
+
+              // δ vía factorial: P(A gana|A_trampa) − P(A gana|limpio). Debería
+              // aproximarse a δ̂ del Bloque A si no hay confusión con la posición.
+              const deltaFactorial = (wrPosA!=null && ciLimpio.p!=null) ? wrPosA-ciLimpio.p : null;
+
+              // ── BLOQUE C: empates por estado ────────────────────────────────────
+              const pctTies = t => t.total>0 ? t.ties/t.total : null;
+
+              const pct = v => v==null ? "—" : `${Math.round(v*100)}%`;
+              const pp  = v => v==null ? "—" : `${v>0?"+":""}${Math.round(v*100)}pp`;
+              const ic  = c => c.lo==null ? "—" : `[${Math.round(c.lo*100)}%, ${Math.round(c.hi*100)}%]`;
 
               return (
                 <Card accent="#eab308">
                   <div style={{fontSize:11,color:"#555",fontWeight:700,marginBottom:12,letterSpacing:1}}>
                     EVIDENCIA DE VENTAJA POR TRAMPA
                   </div>
-                  <div style={{overflowX:"auto"}}>
+
+                  {/* BLOQUE A */}
+                  <div style={{fontSize:11,color:"#eab308",fontWeight:700,marginBottom:8}}>
+                    A · ESTIMADOR DEL EFECTO (δ̂)
+                  </div>
+                  <div style={{display:"flex",gap:16,flexWrap:"wrap",alignItems:"center",marginBottom:10}}>
+                    <div style={{textAlign:"center"}}>
+                      <div style={{fontSize:26,fontWeight:900,
+                        color:deltaHat==null?"#555":deltaHat>0?"#22c55e":"#ef4444"}}>
+                        {pp(deltaHat)}
+                      </div>
+                      <div style={{fontSize:10,color:"#555"}}>δ̂ = WR(tramposo) − 50%</div>
+                    </div>
+                    <div style={{fontSize:11,color:"#aaa",lineHeight:1.6}}>
+                      N={asim.n} · WR(tramposo)={pct(wrTramposo)} · IC95% Wilson {ic(ciEfecto)}<br/>
+                      p-valor (binomial 2 colas, aprox. normal + corrección de continuidad) = {pValEfecto==null?"—":pValEfecto.toFixed(4)}<br/>
+                      <span style={{color:veredictoColor,fontWeight:700}}>{veredicto}</span>
+                    </div>
+                  </div>
+                  <div style={{overflowX:"auto",marginBottom:6}}>
                     <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
                       <thead>
                         <tr style={{borderBottom:"1px solid #1e1e2e"}}>
-                          {["Condición","N","Win rate","vs Limpio","Evidencia"].map(h=>(
+                          {["Desglose por posición","N","WR tramposo","IC95%"].map(h=>(
                             <th key={h} style={{padding:"5px 8px",textAlign:"left",color:"#444",
                               fontWeight:700,fontSize:11,whiteSpace:"nowrap"}}>{h}</th>
                           ))}
                         </tr>
                       </thead>
                       <tbody>
-                        {SITS.map(s=>{
-                          const {wins,losses} = byS[s.id];
-                          const n   = wins+losses;
-                          const wr  = n>0 ? wins/n : null;
-                          const diff= (wr!=null&&wrL!=null) ? wr-wrL : null;
-                          const ev  = wr==null ? "—"
-                            : n < K             ? "⏳ datos insuf."
-                            : diff==null        ? "—"
-                            : Math.abs(diff)<0.05 ? "→ Sin efecto claro"
-                            : diff>0              ? "📈 Ventaja detectada"
-                            :                       "📉 Desventaja detectada";
-                          const evColor = ev.startsWith("📈")?"#22c55e"
-                            : ev.startsWith("📉")?"#ef4444"
-                            : ev.startsWith("⏳")?"#555":"#aaa";
-                          return (
-                            <tr key={s.id} style={{borderBottom:"1px solid #0f0f1a"}}>
-                              <td style={{padding:"6px 8px",color:s.color,fontWeight:700}}>{s.label}</td>
-                              <td style={{padding:"6px 8px",color:"#aaa",fontFamily:"monospace"}}>{n}</td>
-                              <td style={{padding:"6px 8px",color:"#f97316",fontFamily:"monospace"}}>
-                                {wr!=null?`${Math.round(wr*100)}%`:"—"}
-                              </td>
-                              <td style={{padding:"6px 8px",fontFamily:"monospace",
-                                color:diff==null?"#555":diff>0?"#22c55e":"#ef4444"}}>
-                                {diff!=null?(diff>0?"+":"")+Math.round(diff*100)+"pp":"—"}
-                              </td>
-                              <td style={{padding:"6px 8px",color:evColor,fontSize:11}}>{ev}</td>
-                            </tr>
-                          );
-                        })}
+                        <tr style={{borderBottom:"1px solid #0f0f1a"}}>
+                          <td style={{padding:"6px 8px",color:"#aaa"}}>Tramposo es A (estado A_trampa)</td>
+                          <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#aaa"}}>{asim.pos.A.n}</td>
+                          <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#f97316"}}>{pct(wrPosA)}</td>
+                          <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#555"}}>
+                            {ic(wilsonInterval(asim.pos.A.wins,asim.pos.A.n))}
+                          </td>
+                        </tr>
+                        <tr style={{borderBottom:"1px solid #0f0f1a"}}>
+                          <td style={{padding:"6px 8px",color:"#aaa"}}>Tramposo es B (estado B_trampa)</td>
+                          <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#aaa"}}>{asim.pos.B.n}</td>
+                          <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#f97316"}}>{pct(wrPosB)}</td>
+                          <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#555"}}>
+                            {ic(wilsonInterval(asim.pos.B.wins,asim.pos.B.n))}
+                          </td>
+                        </tr>
                       </tbody>
                     </table>
                   </div>
-                  <div style={{fontSize:10,color:"#444",marginTop:8}}>
-                    Win rate = victorias / (victorias + derrotas), excluye la casa. pp = puntos porcentuales vs. condición limpia.
+                  <div style={{fontSize:10,color:"#444",marginBottom:14}}>
+                    δ corregido por posición (promedio simple de ambas filas − 50%) = {pp(deltaCorregido)}.
+                    Si difiere mucho de δ̂ de arriba, el efecto está confundido con la posición A/B.
+                  </div>
+
+                  {/* BLOQUE B */}
+                  <div style={{fontSize:11,color:"#3b82f6",fontWeight:700,marginBottom:8}}>
+                    B · CONTROLES (validación interna)
+                  </div>
+                  <div style={{overflowX:"auto",marginBottom:6}}>
+                    <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                      <thead>
+                        <tr style={{borderBottom:"1px solid #1e1e2e"}}>
+                          {["Estado (control)","N","P(gana A)","IC95%","Check"].map(h=>(
+                            <th key={h} style={{padding:"5px 8px",textAlign:"left",color:"#444",
+                              fontWeight:700,fontSize:11,whiteSpace:"nowrap"}}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr style={{borderBottom:"1px solid #0f0f1a"}}>
+                          <td style={{padding:"6px 8px",color:"#aaa"}}>🎯 Limpio</td>
+                          <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#aaa"}}>{ctrl.limpio.n}</td>
+                          <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#f97316"}}>{pct(ciLimpio.p)}</td>
+                          <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#555"}}>{ic(ciLimpio)}</td>
+                          <td style={{padding:"6px 8px",fontSize:11,
+                            color:sesgoLimpio?.startsWith("⚠")?"#ef4444":"#22c55e"}}>{sesgoLimpio ?? "—"}</td>
+                        </tr>
+                        <tr style={{borderBottom:"1px solid #0f0f1a"}}>
+                          <td style={{padding:"6px 8px",color:"#aaa"}}>⚔️ Ambos trampa</td>
+                          <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#aaa"}}>{ctrl.ambos_trampa.n}</td>
+                          <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#f97316"}}>{pct(ciAmbos.p)}</td>
+                          <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#555"}}>{ic(ciAmbos)}</td>
+                          <td style={{padding:"6px 8px",fontSize:11,
+                            color:sesgoAmbos?.startsWith("⚠")?"#ef4444":"#22c55e"}}>{sesgoAmbos ?? "—"}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                  <div style={{fontSize:10,color:"#444",marginBottom:14}}>
+                    Limpio vs. Ambos trampa: {controlesCoinciden==null ? "— (datos insuficientes)" : controlesCoinciden
+                      ? "coinciden (✓ consistente con el modelo)"
+                      : "⚠ difieren notablemente — posible interacción entre condiciones"}.
+                  </div>
+
+                  {/* BLOQUE C */}
+                  <div style={{fontSize:11,color:"#a855f7",fontWeight:700,marginBottom:8}}>
+                    C · EMPATES POR ESTADO (contexto)
+                  </div>
+                  <div style={{overflowX:"auto"}}>
+                    <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                      <thead>
+                        <tr style={{borderBottom:"1px solid #1e1e2e"}}>
+                          {["Grupo","N","% empates (casa)"].map(h=>(
+                            <th key={h} style={{padding:"5px 8px",textAlign:"left",color:"#444",
+                              fontWeight:700,fontSize:11,whiteSpace:"nowrap"}}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {[
+                          {label:"🎯 Limpio",                                t:ties.limpio},
+                          {label:"🃏 Asimétrico (A_trampa / B_trampa)",       t:ties.asimetrico},
+                          {label:"⚔️ Ambos trampa",                          t:ties.ambos_trampa},
+                        ].map(({label,t})=>(
+                          <tr key={label} style={{borderBottom:"1px solid #0f0f1a"}}>
+                            <td style={{padding:"6px 8px",color:"#aaa"}}>{label}</td>
+                            <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#aaa"}}>{t.total}</td>
+                            <td style={{padding:"6px 8px",fontFamily:"monospace",color:"#a855f7"}}>{pct(pctTies(t))}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div style={{fontSize:10,color:"#444",marginTop:10,lineHeight:1.5}}>
+                    Limpio y ambos_trampa son CONTROLES, no miden el efecto directamente: por diseño 2×2, su win
+                    rate agregado esperado es 50% (en limpio nadie tiene ventaja; en ambos_trampa las ventajas de
+                    A y B se cancelan). Por eso el Bloque B mide P(gana A canónico) para detectar sesgo posicional,
+                    no win rate. δ puede estimarse de dos formas que deberían coincidir: directa (Bloque A, win
+                    rate del tramposo en partidas asimétricas) y factorial (P(A gana|A_trampa) − P(A gana|limpio)
+                    = {pp(deltaFactorial)}). Wilson/binomial usan aproximación normal con corrección de
+                    continuidad — orientativos si N es chico.
                   </div>
                 </Card>
               );
