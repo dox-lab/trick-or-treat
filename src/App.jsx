@@ -1684,6 +1684,19 @@ function GestorScreen({ roomCode, mode="gestor" }) {
       const snap = await get(ref(db,`rooms/${roomCode}`));
       const r = snap.val();
       const next = (r.status?.partidaActual||1)+1;
+
+      if (r.config?.dynamicScheduler) {
+        // ── MOTOR DINÁMICO ── el scheduler decide si quedan partidas
+        const sched = r.scheduler;
+        if (!sched || schedTotalPending(sched) <= 0) {
+          await update(ref(db,`rooms/${roomCode}/status`),{phase:"finished"});
+        } else {
+          await launchBatchDynamic(next, sched, r);
+        }
+        return;
+      }
+
+      // ── MOTOR ESTÁTICO (original) ──
       if (next > r.config.totalPartidas) {
         await update(ref(db,`rooms/${roomCode}/status`),{phase:"finished"});
       } else {
@@ -1848,6 +1861,56 @@ function GestorScreen({ roomCode, mode="gestor" }) {
     Object.entries(partidaData).forEach(([pairKey,pd])=>scheduleBotDecisions(numPartida,pairKey,pd,r));
   };
 
+  // ─── MOTOR DINÁMICO (Fase 2, activo solo con config.dynamicScheduler) ───────
+  // Lanza el siguiente "turno": un batch de partidas en paralelo tomado del
+  // scheduler dinámico (r.scheduler). numTurno funciona como el antiguo
+  // numPartida (clave incremental). El estado canónico sale directo de la cola
+  // del par, así que estadoPartida queda SIEMPRE canónico (sin ambigüedad de
+  // perspectiva) y la condición se deriva con el isPlayerA real.
+  const launchBatchDynamic = async (numTurno, sched, r) => {
+    const batch = schedNextBatch(sched);
+    if (!batch.length) {
+      // no quedan partidas: fin del experimento
+      await update(ref(db,`rooms/${roomCode}/status`),{phase:"finished"});
+      return;
+    }
+    const partidaData = {};
+    const schedCopy = JSON.parse(JSON.stringify(sched)); // para consumir colas
+    batch.forEach(({key,pA,pB,estado})=>{
+      // consumir la condición de la cola de ese par en la copia
+      schedCommit(schedCopy, key);
+      partidaData[key] = {
+        jugadores:[pA,pB],
+        dados:{ [pA]:[roll(),roll()], [pB]:[roll(),roll()] },
+        publicos:[roll(),roll()],
+        estadoPartida: estado,   // canónico del par
+        condicion:{
+          [pA]: deriveCondicion(estado, true),   // pA es el A canónico
+          [pB]: deriveCondicion(estado, false),  // pB es el B canónico
+        },
+        ronda:1, pot:2, decisiones:{}, resultado:null,
+        scoreA:null, scoreB:null, best3A:null, best3B:null,
+        startedAt:Date.now(),
+      };
+    });
+    const anteUpdates = {};
+    Object.values(partidaData).forEach(pd=>{
+      const [p1,p2] = pd.jugadores;
+      anteUpdates[`balance/${p1}`] = (r?.balance?.[p1]??10) - 1;
+      anteUpdates[`balance/${p2}`] = (r?.balance?.[p2]??10) - 1;
+    });
+    const { total, done } = schedTotalGames(schedCopy);
+    await update(ref(db,`rooms/${roomCode}/partidas/${numTurno}`), partidaData);
+    await update(ref(db,`rooms/${roomCode}`), {
+      ...anteUpdates,
+      scheduler: schedCopy,                 // persistir colas actualizadas
+      "status/partidaActual":numTurno,
+      "status/phase":"playing",
+      "config/totalPartidas": total,        // total dinámico (jugadas+pendientes)
+    });
+    Object.entries(partidaData).forEach(([pairKey,pd])=>scheduleBotDecisions(numTurno,pairKey,pd,r));
+  };
+
   const scheduleBotDecisions = async (n, pairKey, pd, r) => {
     const runKey = `${n}_${pairKey}`;
     if (botRunningRef.current.has(runKey)) return;
@@ -1935,10 +1998,25 @@ function GestorScreen({ roomCode, mode="gestor" }) {
     const players = Object.keys(room.players||{}).filter(k=>k!=="gestor");
     if (players.length<2){ alert("Necesitas al menos 2 jugadores"); return; }
     const K = room.config.K || 5;
+    const balanceInit = {};
+    players.forEach(p=>{ balanceInit[p]=10; });
+
+    if (room.config?.dynamicScheduler) {
+      // ── MOTOR DINÁMICO ──
+      const sched = schedCreate(players, K);
+      const { total } = schedTotalGames(sched);
+      await update(ref(db,`rooms/${roomCode}`),{
+        scheduler:sched, balance:balanceInit,
+        pairs:null, matchStateSchedule:null,
+        "config/totalPartidas":total,
+      });
+      await launchBatchDynamic(1, sched, {...room, balance:balanceInit});
+      return;
+    }
+
+    // ── MOTOR ESTÁTICO (comportamiento original) ──
     const { schedule, matchStates } = buildSchedule(players, K);
     const totalPartidas = (schedule[players[0]]||[]).length;
-    const balanceInit   = {};
-    players.forEach(p=>{ balanceInit[p]=10; });
     await update(ref(db,`rooms/${roomCode}`),{
       pairs:schedule, matchStateSchedule:matchStates, balance:balanceInit,
       "config/totalPartidas":totalPartidas,
@@ -3303,7 +3381,25 @@ function GestorScreen({ roomCode, mode="gestor" }) {
             <input type="range" min={0} max={60} step={5} value={cfgLocal.timerSecs||0}
               onChange={e=>setCfgLocal(c=>({...c,timerSecs:+e.target.value}))}
               style={{width:"100%",marginBottom:16,accentColor:"#f97316"}}/>
-            <Btn onClick={saveConfig} variant="purple" style={{width:"100%"}}>Guardar cambios</Btn>
+
+            {/* Scheduler dinámico (permite unir jugadores a mitad de experimento) */}
+            <div style={{borderTop:"1px solid #1e1e2e",paddingTop:14,marginBottom:6}}>
+              <label style={{color:phase==="lobby"?"#777":"#444",fontSize:13,display:"flex",alignItems:"center",gap:10,
+                marginBottom:6,cursor:phase==="lobby"?"pointer":"not-allowed"}}>
+                <input type="checkbox" checked={!!cfgLocal.dynamicScheduler}
+                  disabled={phase!=="lobby"}
+                  onChange={e=>setCfgLocal(c=>({...c,dynamicScheduler:e.target.checked}))}
+                  style={{accentColor:"#3b82f6",width:16,height:16}}/>
+                🔀 Scheduler dinámico (permite unir jugadores durante el experimento)
+              </label>
+              <div style={{fontSize:11,color:"#555",lineHeight:1.5,marginLeft:26}}>
+                {phase==="lobby"
+                  ? "Optimiza el emparejamiento y permite que hasta "+MAX_JUGADORES_ADICIONALES+" jugadores se unan una vez iniciado. Debe activarse ANTES de iniciar."
+                  : "Solo se puede cambiar en el lobby (antes de iniciar el experimento)."}
+              </div>
+            </div>
+
+            <Btn onClick={saveConfig} variant="purple" style={{width:"100%",marginTop:12}}>Guardar cambios</Btn>
           </Card>
 
           <Card accent="#3b82f6">
