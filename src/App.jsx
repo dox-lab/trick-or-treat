@@ -322,7 +322,7 @@ const MAX_JUGADORES_ADICIONALES = 4;
 
 // Máximo de fichas que un jugador puede arriesgar en UNA partida:
 // 1 ante + 2 apuestas adicionales (rondas 2 y 3) = 3 fichas.
-const MAX_APUESTA_PARTIDA = 3;
+const MAX_APUESTA_PARTIDA = 4;
 
 // Balance inicial garantizado por jugador = C(N,2)·4·K·máxApuestaPartida,
 // donde C(N,2) = N·(N-1)/2 es el nº de emparejamientos posibles (combinaciones
