@@ -2217,8 +2217,12 @@ function GestorScreen({ roomCode, mode="gestor" }) {
     const players = Object.keys(room.players||{}).filter(k=>k!=="gestor");
     if (players.length<2){ alert("Necesitas al menos 2 jugadores"); return; }
     const K = room.config.K || 5;
+    // Balance inicial calculado con la fórmula al crear la sala (C(N,2)·4·K·max).
+    // Recalculamos como respaldo por si es una sala vieja sin el campo en config.
+    const balInicial = room.config?.balanceInicial
+      ?? calcBalanceInicial(room.config?.numJugadores || players.length, K);
     const balanceInit = {};
-    players.forEach(p=>{ balanceInit[p]=10; });
+    players.forEach(p=>{ balanceInit[p]=balInicial; });
 
     if (room.config?.dynamicScheduler) {
       // ── MOTOR DINÁMICO ──
@@ -2246,7 +2250,9 @@ function GestorScreen({ roomCode, mode="gestor" }) {
   const resetSession = async ()=>{
     botRunningRef.current.clear();
     const players = Object.keys(room?.players||{}).filter(k=>k!=="gestor");
-    const bal={}; players.forEach(p=>{bal[p]=10;});
+    const balInicial = room?.config?.balanceInicial
+      ?? calcBalanceInicial(room?.config?.numJugadores || players.length, room?.config?.K || 5);
+    const bal={}; players.forEach(p=>{bal[p]=balInicial;});
     await update(ref(db,`rooms/${roomCode}`),{
       partidas:null,logs:null,balance:bal,pairs:null,matchStateSchedule:null,
       "status/phase":"lobby","status/partidaActual":0,
@@ -2735,11 +2741,10 @@ function GestorScreen({ roomCode, mode="gestor" }) {
         const botCount   = allPlayers.length - humanCount;
         const fichasTotal= allPlayers.reduce((acc,[uid])=>acc+(balance?.[uid]??(config?.balanceInicial??10)), 0);
         // La casa "presta" balanceInicial a cada jugador al arrancar. Su saldo es
-        // lo prestado menos lo que los jugadores tienen ahora: si los jugadores en
-        // conjunto ganaron fichas, la casa queda negativa (pagó de su propio pozo);
-        // si perdieron, la casa queda positiva. Usa el balance inicial REAL, no 10.
-        const balInicial = config?.balanceInicial ?? 10;
-        const fichasCasa = (humanCount + botCount) * balInicial - fichasTotal;
+        // lo prestado menos lo que los jugadores tienen ahora. Usa el balance
+        // inicial REAL (fórmula C(N,2)·4·K·max), no 10 fijo.
+        const balInicialCasa = config?.balanceInicial ?? 10;
+        const fichasCasa = (humanCount + botCount) * balInicialCasa - fichasTotal;
 
         // Enfrentamientos ÚNICOS totales en la sala (no por jugador): C(N,2)*4K.
         // totalP (arriba) es por-jugador; cada enfrentamiento involucra a 2
