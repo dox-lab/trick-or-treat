@@ -2733,11 +2733,12 @@ function GestorScreen({ roomCode, mode="gestor" }) {
         const jugadas  = phase==="finished" ? pActual : Math.max(0, pActual - 1);
         const humanCount = allPlayers.filter(([,p])=>!p.isBot).length;
         const botCount   = allPlayers.length - humanCount;
+        const fichasTotal= allPlayers.reduce((acc,[uid])=>acc+(balance?.[uid]??(config?.balanceInicial??10)), 0);
+        // La casa "presta" balanceInicial a cada jugador al arrancar. Su saldo es
+        // lo prestado menos lo que los jugadores tienen ahora: si los jugadores en
+        // conjunto ganaron fichas, la casa queda negativa (pagó de su propio pozo);
+        // si perdieron, la casa queda positiva. Usa el balance inicial REAL, no 10.
         const balInicial = config?.balanceInicial ?? 10;
-        const fichasTotal= allPlayers.reduce((acc,[uid])=>acc+(balance?.[uid]??balInicial), 0);
-        // Conservación: la casa "prestó" balInicial a cada jugador; sus fichas son
-        // lo que ya no está en manos de los jugadores. (Se hace positivo a medida
-        // que la casa gana pozos por empates, retiros y dobles tres-unos.)
         const fichasCasa = (humanCount + botCount) * balInicial - fichasTotal;
 
         // Enfrentamientos ÚNICOS totales en la sala (no por jugador): C(N,2)*4K.
