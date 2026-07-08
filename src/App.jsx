@@ -2217,12 +2217,8 @@ function GestorScreen({ roomCode, mode="gestor" }) {
     const players = Object.keys(room.players||{}).filter(k=>k!=="gestor");
     if (players.length<2){ alert("Necesitas al menos 2 jugadores"); return; }
     const K = room.config.K || 5;
-    // Balance inicial garantizado, calculado al crear la sala. Si por alguna razón
-    // no está en config (salas viejas), lo recalculamos con la fórmula.
-    const balInicial = room.config?.balanceInicial
-      ?? calcBalanceInicial(room.config?.numJugadores || players.length, K);
     const balanceInit = {};
-    players.forEach(p=>{ balanceInit[p]=balInicial; });
+    players.forEach(p=>{ balanceInit[p]=10; });
 
     if (room.config?.dynamicScheduler) {
       // ── MOTOR DINÁMICO ──
@@ -2250,9 +2246,7 @@ function GestorScreen({ roomCode, mode="gestor" }) {
   const resetSession = async ()=>{
     botRunningRef.current.clear();
     const players = Object.keys(room?.players||{}).filter(k=>k!=="gestor");
-    const balInicial = room?.config?.balanceInicial
-      ?? calcBalanceInicial(room?.config?.numJugadores || players.length, room?.config?.K || 5);
-    const bal={}; players.forEach(p=>{bal[p]=balInicial;});
+    const bal={}; players.forEach(p=>{bal[p]=10;});
     await update(ref(db,`rooms/${roomCode}`),{
       partidas:null,logs:null,balance:bal,pairs:null,matchStateSchedule:null,
       "status/phase":"lobby","status/partidaActual":0,
@@ -2739,8 +2733,12 @@ function GestorScreen({ roomCode, mode="gestor" }) {
         const jugadas  = phase==="finished" ? pActual : Math.max(0, pActual - 1);
         const humanCount = allPlayers.filter(([,p])=>!p.isBot).length;
         const botCount   = allPlayers.length - humanCount;
-        const fichasTotal= allPlayers.reduce((acc,[uid])=>acc+(balance?.[uid]??(config?.balanceInicial??10)), 0);
-        const fichasCasa = (humanCount + botCount) * 10 - fichasTotal;
+        const balInicial = config?.balanceInicial ?? 10;
+        const fichasTotal= allPlayers.reduce((acc,[uid])=>acc+(balance?.[uid]??balInicial), 0);
+        // Conservación: la casa "prestó" balInicial a cada jugador; sus fichas son
+        // lo que ya no está en manos de los jugadores. (Se hace positivo a medida
+        // que la casa gana pozos por empates, retiros y dobles tres-unos.)
+        const fichasCasa = (humanCount + botCount) * balInicial - fichasTotal;
 
         // Enfrentamientos ÚNICOS totales en la sala (no por jugador): C(N,2)*4K.
         // totalP (arriba) es por-jugador; cada enfrentamiento involucra a 2
