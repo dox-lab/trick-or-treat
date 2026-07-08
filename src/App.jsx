@@ -320,6 +320,21 @@ const SCHED_CONDS = ["limpio", "A_trampa", "B_trampa", "ambos_trampa"];
 // Máximo de jugadores que pueden UNIRSE una vez iniciado el experimento.
 const MAX_JUGADORES_ADICIONALES = 4;
 
+// Máximo de fichas que un jugador puede arriesgar en UNA partida:
+// 1 ante + 2 apuestas adicionales (rondas 2 y 3) = 3 fichas.
+const MAX_APUESTA_PARTIDA = 3;
+
+// Balance inicial garantizado por jugador = C(N,2)·4·K·máxApuestaPartida,
+// donde C(N,2) = N·(N-1)/2 es el nº de emparejamientos posibles (combinaciones
+// de N jugadores tomados de 2 en 2). MAX_APUESTA_PARTIDA es lo máximo que se
+// arriesga en una partida (1 ante + 2 apuestas).
+function combinatoria2(N) {
+  return (N * (N - 1)) / 2;   // C(N,2)
+}
+function calcBalanceInicial(N, K) {
+  return combinatoria2(Math.max(2, N)) * 4 * K * MAX_APUESTA_PARTIDA;
+}
+
 function _shuffleInPlace(arr) {
   for (let i = arr.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -831,11 +846,12 @@ function CreateRoomScreen({ onCreated }) {
   const [botStrategies,setBotStrategies]= useState([]);
   const [loading,      setLoading]      = useState(false);
 
-  const kMin  = calcKmin(numJugadores);
-  const kMax  = kMin + 10;
-  const [K, setK] = useState(kMin);
+  const kRec  = calcKmin(numJugadores);   // K recomendado (mínimo para potencia estadística)
+  const kMin  = 1;                          // K es libre: el gestor puede bajar de la recomendación
+  const kMax  = kRec + 20;                  // margen amplio por encima de la recomendación
+  const [K, setK] = useState(kRec);
 
-  // Cuando cambia numJugadores, recalculamos K al mínimo recomendado
+  // Cuando cambia numJugadores, reseteamos K al valor recomendado (el gestor puede ajustarlo)
   const handleN = (n) => {
     setNumJugadores(n);
     setK(calcKmin(n));
@@ -845,25 +861,31 @@ function CreateRoomScreen({ onCreated }) {
   const cfg = { limpio: K, A_trampa: K, B_trampa: K, ambos_trampa: K };
   // Partidas por jugador = (N-1) rivales × 4K condiciones
   const partidasPorJugador = (numJugadores - 1) * 4 * K;
+  // Balance inicial garantizado = C(N,2)·4·K·máxApuestaPartida
+  const balanceInicialUI = calcBalanceInicial(numJugadores, K);
 
   const create = async () => {
     if (!pw) return;
     setLoading(true);
     const code = genCode();
+    const balanceInicial = calcBalanceInicial(numJugadores, K);
     const botPlayers = {};
+    const initBalance = {};
     for (let i = 0; i < botCount; i++) {
       const bid = `bot_${i}`;
       botPlayers[bid] = { uid: bid, ...pickBotIdentity(i), isBot: true, strategy: botStrategies[i] || "ev_threshold" };
+      initBalance[bid] = balanceInicial;
     }
     await set(ref(db, `rooms/${code}`), {
       code, password: pw,
       config: {
         numJugadores, K, totalPartidas, faseConfig: cfg,
+        balanceInicial, maxApuestaPartida: MAX_APUESTA_PARTIDA,
         showEV: false, showRivalEV: false, timerSecs: 0,
         open: false, botCount, botStrategies,
       },
       status: { phase: "lobby", partidaActual: 0 },
-      players: botPlayers, pairs: {}, matchStateSchedule: [], balance: {}, logs: {},
+      players: botPlayers, pairs: {}, matchStateSchedule: [], balance: initBalance, logs: {},
       createdAt: Date.now(),
     });
     setLoading(false);
@@ -903,10 +925,10 @@ function CreateRoomScreen({ onCreated }) {
           </div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
             {[
-              {label:"K mínimo recomendado", val:kMin,              color:"#22c55e"},
+              {label:"K recomendado",         val:kRec,              color:"#22c55e"},
               {label:"K seleccionado",        val:K,                 color:"#f97316"},
               {label:"Partidas por jugador",  val:partidasPorJugador,color:"#3b82f6"},
-              {label:"Total de slots",        val:totalPartidas,     color:"#a855f7"},
+              {label:"Fichas iniciales",      val:balanceInicialUI,  color:"#eab308"},
             ].map(({label,val,color})=>(
               <div key={label} style={{background:"#12121e",borderRadius:8,padding:"8px 10px",textAlign:"center"}}>
                 <div style={{fontSize:20,fontWeight:900,color}}>{val}</div>
@@ -917,13 +939,18 @@ function CreateRoomScreen({ onCreated }) {
 
           {/* Ajuste manual de K */}
           <label style={{color:"#777",fontSize:12,display:"block",marginBottom:4}}>
-            Ajustar K:{" "}
+            Ajustar K (libre):{" "}
             <span style={{color:"#f97316",fontWeight:700}}>{K}</span>
-            {K===kMin&&<span style={{color:"#22c55e",fontSize:11}}> (mínimo recomendado)</span>}
+            {K===kRec && <span style={{color:"#22c55e",fontSize:11}}> (recomendado)</span>}
+            {K<kRec   && <span style={{color:"#ef4444",fontSize:11}}> (⚠ por debajo del recomendado {kRec})</span>}
           </label>
           <input type="range" min={kMin} max={kMax} value={K}
             onChange={e=>setK(+e.target.value)}
-            style={{width:"100%",accentColor:"#f97316",marginBottom:8}}/>
+            style={{width:"100%",accentColor:"#f97316",marginBottom:6}}/>
+          <div style={{fontSize:11,color:"#eab308",marginBottom:8}}>
+            💰 Fichas iniciales = C({numJugadores},2)·4·K·{MAX_APUESTA_PARTIDA} ={" "}
+            <b>{balanceInicialUI}</b> por jugador
+          </div>
 
           {/* Distribución automática de condiciones */}
           <div style={{fontSize:11,color:"#555",marginBottom:6}}>Condiciones (K partidas cada una):</div>
@@ -946,10 +973,11 @@ function CreateRoomScreen({ onCreated }) {
         {/* Nota estadística */}
         <div style={{background:"#0f1a0f",borderRadius:10,padding:"10px 12px",
           border:"1px solid #22c55e22",fontSize:11,color:"#555",lineHeight:1.6}}>
-          <span style={{color:"#22c55e",fontWeight:700}}>¿Por qué K={kMin}?</span>{" "}
+          <span style={{color:"#22c55e",fontWeight:700}}>¿Por qué K={kRec}?</span>{" "}
           Con {numJugadores} jugadores cada uno enfrenta {numJugadores-1} rival{numJugadores-1!==1?"es":""} distinto{numJugadores-1!==1?"s":""}.
           Se necesitan ≥30 obs por condición para detectar diferencias sobre el azar.
-          K={kMin} garantiza {kMin*(numJugadores-1)} obs por condición por jugador.
+          K={kRec} garantiza {kRec*(numJugadores-1)} obs por condición por jugador. Es una
+          recomendación: puedes fijar K libremente.
         </div>
 
         {/* Anuncio de capacidad de jugadores */}
@@ -1083,8 +1111,10 @@ function ProfileScreen({ roomCode, onJoined }) {
       lateJoin: inProgress };
     const updates = { [`players/${uid}`]: profile };
     if (inProgress) {
-      // balance inicial estándar; marca para que el gestor lo incorpore al scheduler
-      updates[`balance/${uid}`] = 10;
+      // balance inicial garantizado (mismo que recibieron los jugadores iniciales);
+      // marca para que el gestor lo incorpore al scheduler
+      updates[`balance/${uid}`] = r.config?.balanceInicial
+        ?? calcBalanceInicial(r.config?.numJugadores || 2, r.config?.K || 5);
       updates[`pendingJoins/${uid}`] = { uid, ts: Date.now() };
     }
     await update(ref(db,`rooms/${roomCode}`), updates);
@@ -1229,8 +1259,9 @@ async function resolveRondaDB(roomCode, room, n, pairKey, pd, ronda, pidA, decA,
 
   // Ambos apostaron
   const newPot = (pd.pot||2) + 2;
-  const balA   = room.balance?.[pidA]??10;
-  const balB   = room.balance?.[pidB]??10;
+  const _bi    = room.config?.balanceInicial ?? 10;
+  const balA   = room.balance?.[pidA]??_bi;
+  const balB   = room.balance?.[pidB]??_bi;
   const upds   = { [`balance/${pidA}`]:balA-1, [`balance/${pidB}`]:balB-1 };
 
   if (ronda >= 3) {
@@ -1279,7 +1310,8 @@ async function finalizarPartidaDB(roomCode, room, n, pairKey, pd, ganador, motiv
 
   const [p1,p2] = pd.jugadores||[];
   const pot      = pd.pot||2;
-  let b1=room.balance?.[p1]??10, b2=room.balance?.[p2]??10;
+  const _bi = room.config?.balanceInicial ?? 10;
+  let b1=room.balance?.[p1]??_bi, b2=room.balance?.[p2]??_bi;
   let res;
 
   if (ganador==="casa") {
@@ -2037,8 +2069,9 @@ function GestorScreen({ roomCode, mode="gestor" }) {
     const anteUpdates = {};
     Object.values(partidaData).forEach(pd=>{
       const [p1,p2] = pd.jugadores;
-      anteUpdates[`balance/${p1}`] = (r?.balance?.[p1]??10) - 1;
-      anteUpdates[`balance/${p2}`] = (r?.balance?.[p2]??10) - 1;
+      const _bi = r?.config?.balanceInicial ?? 10;
+      anteUpdates[`balance/${p1}`] = (r?.balance?.[p1]??_bi) - 1;
+      anteUpdates[`balance/${p2}`] = (r?.balance?.[p2]??_bi) - 1;
     });
     await update(ref(db,`rooms/${roomCode}/partidas/${numPartida}`), partidaData);
     await update(ref(db,`rooms/${roomCode}`), {...anteUpdates, "status/partidaActual":numPartida, "status/phase":"playing"});
@@ -2081,8 +2114,9 @@ function GestorScreen({ roomCode, mode="gestor" }) {
     const anteUpdates = {};
     Object.values(partidaData).forEach(pd=>{
       const [p1,p2] = pd.jugadores;
-      anteUpdates[`balance/${p1}`] = (r?.balance?.[p1]??10) - 1;
-      anteUpdates[`balance/${p2}`] = (r?.balance?.[p2]??10) - 1;
+      const _bi = r?.config?.balanceInicial ?? 10;
+      anteUpdates[`balance/${p1}`] = (r?.balance?.[p1]??_bi) - 1;
+      anteUpdates[`balance/${p2}`] = (r?.balance?.[p2]??_bi) - 1;
     });
     const { total, done } = schedTotalGames(schedCopy);
     await update(ref(db,`rooms/${roomCode}/partidas/${numTurno}`), partidaData);
@@ -2328,7 +2362,7 @@ function GestorScreen({ roomCode, mode="gestor" }) {
                     <div style={{color:p.online===true?"#22c55e":"#ef4444",fontSize:11}}>
                       {p.online===true?"● En línea":"● Desconectado"}
                     </div>
-                    <div style={{color:"#555",fontSize:11}}>💰 {balance?.[uid]??10}</div>
+                    <div style={{color:"#555",fontSize:11}}>💰 {balance?.[uid]??(config?.balanceInicial??10)}</div>
                   </div>
                   {phase==="lobby"&&(
                     <button onClick={()=>kickPlayer(uid)} title="Expulsar" style={{background:"none",border:"none",
@@ -2354,7 +2388,7 @@ function GestorScreen({ roomCode, mode="gestor" }) {
                       <span style={{fontSize:18}}>{p.avatar} 🤖</span>
                       <div>
                         <div style={{color:p.color||"#22c55e",fontWeight:700,fontSize:12}}>{p.nickname}</div>
-                        <div style={{color:"#555",fontSize:10}}>💰 {balance?.[uid]??10} · {si?.emoji||"🧮"} {si?.label||p.strategy}</div>
+                        <div style={{color:"#555",fontSize:10}}>💰 {balance?.[uid]??(config?.balanceInicial??10)} · {si?.emoji||"🧮"} {si?.label||p.strategy}</div>
                       </div>
                     </div>
                   );
@@ -2699,7 +2733,7 @@ function GestorScreen({ roomCode, mode="gestor" }) {
         const jugadas  = phase==="finished" ? pActual : Math.max(0, pActual - 1);
         const humanCount = allPlayers.filter(([,p])=>!p.isBot).length;
         const botCount   = allPlayers.length - humanCount;
-        const fichasTotal= allPlayers.reduce((acc,[uid])=>acc+(balance?.[uid]??10), 0);
+        const fichasTotal= allPlayers.reduce((acc,[uid])=>acc+(balance?.[uid]??(config?.balanceInicial??10)), 0);
         const fichasCasa = (humanCount + botCount) * 10 - fichasTotal;
 
         // Enfrentamientos ÚNICOS totales en la sala (no por jugador): C(N,2)*4K.
@@ -2741,7 +2775,7 @@ function GestorScreen({ roomCode, mode="gestor" }) {
           }
         });
 
-        const sorted = Object.entries(sm).sort((a,b)=>(balance?.[b[0]]??10)-(balance?.[a[0]]??10));
+        const sorted = Object.entries(sm).sort((a,b)=>(balance?.[b[0]]??(config?.balanceInicial??10))-(balance?.[a[0]]??(config?.balanceInicial??10)));
 
         // ── columnas de la tabla ───────────────────────────────────────────────
         const TH = ({children,right=false})=>(
@@ -2804,7 +2838,7 @@ function GestorScreen({ roomCode, mode="gestor" }) {
                   </thead>
                   <tbody>
                     {sorted.map(([uid,s])=>{
-                      const bal = balance?.[uid]??10;
+                      const bal = balance?.[uid]??(config?.balanceInicial??10);
                       const vd  = s.wins + s.losses;
                       const ratio = vd ? Math.round((s.wins/vd)*100) : null;
                       const ratioColor = ratio===null?"#555":ratio>=50?"#22c55e":"#ef4444";
@@ -3191,7 +3225,7 @@ function GestorScreen({ roomCode, mode="gestor" }) {
               allPlayers.forEach(([uid,pl])=>{
                 sbp[uid] = {
                   uid, nick:pl.nickname, avatar:pl.avatar, color:pl.color, isBot:!!pl.isBot,
-                  global:{ jugadas:0, wins:0, losses:0, casa:0, wrGlobal:null, balance:(balance?.[uid]??10)-10 },
+                  global:{ jugadas:0, wins:0, losses:0, casa:0, wrGlobal:null, balance:(balance?.[uid]??(config?.balanceInicial??10))-(config?.balanceInicial??10) },
                   roles:{ baseline:roleTemplate(), cheater:roleTemplate(), victim:roleTemplate(), both:roleTemplate() },
                   vsRival:{},
                   breakdown:{ winsCheating:0, winsClean:0, lossesAsVictim:0, lossesOther:0 },
@@ -3895,7 +3929,7 @@ function PlayerScreen({ roomCode, playerId, profile, onLeave }) {
   const phase   = status?.phase||"lobby";
   const n       = status?.partidaActual||0;
   const myPair  = getMyPair(room,n);
-  const myBal   = balance?.[playerId]??10;
+  const myBal   = balance?.[playerId]??(config?.balanceInicial??10);
   const myColor = profile?.color||"#f97316";
 
   if (phase==="lobby"||phase==="finished") return (
